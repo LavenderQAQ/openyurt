@@ -59,7 +59,7 @@ type ReconcileDelegateLease struct {
 
 // Add creates a delegatelease controller and add it to the Manager with default RBAC. The Manager will set fields on the Controller
 // and Start it when the Manager is Started.
-func Add(_ *appconfig.CompletedConfig, mgr manager.Manager) error {
+func Add(ctx context.Context, _ *appconfig.CompletedConfig, mgr manager.Manager) error {
 	r := &ReconcileDelegateLease{
 		ldc:    utils.NewLeaseDelegatedCounter(),
 		delLdc: utils.NewLeaseDelegatedCounter(),
@@ -214,7 +214,7 @@ func (r *ReconcileDelegateLease) InjectClient(c client.Client) error {
 func (r *ReconcileDelegateLease) InjectConfig(cfg *rest.Config) error {
 	client, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
-		klog.Errorf("failed to create kube client, %v", err)
+		klog.Errorf("could not create kube client, %v", err)
 		return err
 	}
 	r.dlClient = client

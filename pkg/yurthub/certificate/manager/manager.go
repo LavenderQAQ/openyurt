@@ -32,7 +32,6 @@ import (
 	"github.com/openyurtio/openyurt/pkg/yurthub/certificate/kubeletcertificate"
 	hubServerCert "github.com/openyurtio/openyurt/pkg/yurthub/certificate/server"
 	"github.com/openyurtio/openyurt/pkg/yurthub/certificate/token"
-	"github.com/openyurtio/openyurt/pkg/yurthub/util"
 )
 
 const (
@@ -123,7 +122,7 @@ func (hcm *yurtHubCertManager) Ready() bool {
 		errs = append(errs, apiServerClientCertNotReadyError)
 	}
 
-	if exist, _ := util.FileExists(hcm.YurtClientCertificateManager.GetCaFile()); !exist {
+	if len(hcm.YurtClientCertificateManager.GetCAData()) == 0 {
 		errs = append(errs, caCertIsNotReadyError)
 	}
 

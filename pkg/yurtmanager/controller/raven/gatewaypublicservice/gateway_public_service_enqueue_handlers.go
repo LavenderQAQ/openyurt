@@ -27,7 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	ravenv1beta1 "github.com/openyurtio/openyurt/pkg/apis/raven/v1beta1"
-	"github.com/openyurtio/openyurt/pkg/yurtmanager/controller/raven/utils"
+	"github.com/openyurtio/openyurt/pkg/yurtmanager/controller/raven/util"
 )
 
 type EnqueueRequestForGatewayEvent struct{}
@@ -35,47 +35,44 @@ type EnqueueRequestForGatewayEvent struct{}
 func (h *EnqueueRequestForGatewayEvent) Create(e event.CreateEvent, q workqueue.RateLimitingInterface) {
 	gw, ok := e.Object.(*ravenv1beta1.Gateway)
 	if !ok {
-		klog.Error(Format("fail to assert runtime Object %s/%s to v1beta1.Gateway,", e.Object.GetNamespace(), e.Object.GetName()))
+		klog.Error(Format("could not assert runtime Object %s/%s to v1beta1.Gateway,", e.Object.GetNamespace(), e.Object.GetName()))
 		return
 	}
-	if gw.Spec.ExposeType == "" {
+	if gw.Spec.ExposeType != ravenv1beta1.ExposeTypeLoadBalancer {
 		return
 	}
-	klog.V(2).Infof(Format("enqueue gateway %s as create event", gw.GetName()))
-	utils.AddGatewayToWorkQueue(gw.GetName(), q)
+	klog.V(4).Infof(Format("enqueue gateway %s as create event", gw.GetName()))
+	util.AddGatewayToWorkQueue(gw.GetName(), q)
 }
 
 func (h *EnqueueRequestForGatewayEvent) Update(e event.UpdateEvent, q workqueue.RateLimitingInterface) {
 	newGw, ok := e.ObjectNew.(*ravenv1beta1.Gateway)
 	if !ok {
-		klog.Error(Format("fail to assert runtime Object %s/%s to v1beta1.Gateway,", e.ObjectNew.GetNamespace(), e.ObjectNew.GetName()))
+		klog.Error(Format("could not assert runtime Object %s/%s to v1beta1.Gateway,", e.ObjectNew.GetNamespace(), e.ObjectNew.GetName()))
 		return
 	}
 	oldGw, ok := e.ObjectOld.(*ravenv1beta1.Gateway)
 	if !ok {
-		klog.Error(Format("fail to assert runtime Object %s/%s to v1beta1.Gateway,", e.ObjectOld.GetNamespace(), e.ObjectOld.GetName()))
+		klog.Error(Format("could not assert runtime Object %s/%s to v1beta1.Gateway,", e.ObjectOld.GetNamespace(), e.ObjectOld.GetName()))
 		return
 	}
 	if needUpdate(newGw, oldGw) {
-		klog.V(2).Infof(Format("enqueue gateway %s as update event", newGw.GetName()))
-		utils.AddGatewayToWorkQueue(newGw.GetName(), q)
+		klog.V(4).Infof(Format("enqueue gateway %s as update event", newGw.GetName()))
+		util.AddGatewayToWorkQueue(newGw.GetName(), q)
 	}
 }
 
 func (h *EnqueueRequestForGatewayEvent) Delete(e event.DeleteEvent, q workqueue.RateLimitingInterface) {
 	gw, ok := e.Object.(*ravenv1beta1.Gateway)
 	if !ok {
-		klog.Error(Format("fail to assert runtime Object %s/%s to v1beta1.Gateway,", e.Object.GetNamespace(), e.Object.GetName()))
+		klog.Error(Format("could not assert runtime Object %s/%s to v1beta1.Gateway,", e.Object.GetNamespace(), e.Object.GetName()))
 		return
 	}
-	if gw.Spec.ExposeType == "" {
+	if gw.Spec.ExposeType != ravenv1beta1.ExposeTypeLoadBalancer {
 		return
 	}
-	if gw.DeletionTimestamp != nil {
-		return
-	}
-	klog.V(2).Infof(Format("enqueue gateway %s as delete event", gw.GetName()))
-	utils.AddGatewayToWorkQueue(gw.GetName(), q)
+	klog.V(4).Infof(Format("enqueue gateway %s as delete event", gw.GetName()))
+	util.AddGatewayToWorkQueue(gw.GetName(), q)
 }
 
 func (h *EnqueueRequestForGatewayEvent) Generic(e event.GenericEvent, q workqueue.RateLimitingInterface) {
@@ -83,11 +80,13 @@ func (h *EnqueueRequestForGatewayEvent) Generic(e event.GenericEvent, q workqueu
 }
 
 func needUpdate(newObj, oldObj *ravenv1beta1.Gateway) bool {
-	if newObj.Spec.ExposeType != oldObj.Spec.ExposeType {
-		return true
-	}
-	if utils.HashObject(newObj.Status.ActiveEndpoints) != utils.HashObject(oldObj.Status.ActiveEndpoints) {
-		return true
+	if newObj.Spec.ExposeType == ravenv1beta1.ExposeTypeLoadBalancer || oldObj.Spec.ExposeType == ravenv1beta1.ExposeTypeLoadBalancer {
+		if newObj.Spec.ExposeType != oldObj.Spec.ExposeType {
+			return true
+		}
+		if util.HashObject(newObj.Status.ActiveEndpoints) != util.HashObject(oldObj.Status.ActiveEndpoints) {
+			return true
+		}
 	}
 	return false
 }
@@ -99,18 +98,18 @@ type EnqueueRequestForConfigEvent struct {
 func (h *EnqueueRequestForConfigEvent) Create(e event.CreateEvent, q workqueue.RateLimitingInterface) {
 	cm, ok := e.Object.(*corev1.ConfigMap)
 	if !ok {
-		klog.Error(Format("fail to assert runtime Object %s/%s to v1.Configmap,", e.Object.GetNamespace(), e.Object.GetName()))
+		klog.Error(Format("could not assert runtime Object %s/%s to v1.Configmap,", e.Object.GetNamespace(), e.Object.GetName()))
 		return
 	}
 	if cm.Data == nil {
 		return
 	}
-	if _, _, err := net.SplitHostPort(cm.Data[utils.ProxyServerExposedPortKey]); err == nil {
-		h.addExposedGateway(q)
+	if _, _, err := net.SplitHostPort(cm.Data[util.ProxyServerExposedPortKey]); err == nil {
+		addExposedGateway(h.client, q)
 		return
 	}
-	if _, _, err := net.SplitHostPort(cm.Data[utils.VPNServerExposedPortKey]); err == nil {
-		h.addExposedGateway(q)
+	if _, _, err := net.SplitHostPort(cm.Data[util.VPNServerExposedPortKey]); err == nil {
+		addExposedGateway(h.client, q)
 		return
 	}
 }
@@ -118,24 +117,24 @@ func (h *EnqueueRequestForConfigEvent) Create(e event.CreateEvent, q workqueue.R
 func (h *EnqueueRequestForConfigEvent) Update(e event.UpdateEvent, q workqueue.RateLimitingInterface) {
 	newCm, ok := e.ObjectNew.(*corev1.ConfigMap)
 	if !ok {
-		klog.Error(Format("fail to assert runtime Object %s/%s to v1.Configmap,", e.ObjectNew.GetNamespace(), e.ObjectNew.GetName()))
+		klog.Error(Format("could not assert runtime Object %s/%s to v1.Configmap,", e.ObjectNew.GetNamespace(), e.ObjectNew.GetName()))
 		return
 	}
 	oldCm, ok := e.ObjectOld.(*corev1.ConfigMap)
 	if !ok {
-		klog.Error(Format("fail to assert runtime Object %s/%s to v1.Configmap,", e.ObjectOld.GetNamespace(), e.ObjectOld.GetName()))
+		klog.Error(Format("could not assert runtime Object %s/%s to v1.Configmap,", e.ObjectOld.GetNamespace(), e.ObjectOld.GetName()))
 		return
 	}
-	_, newProxyPort, newErr := net.SplitHostPort(newCm.Data[utils.ProxyServerExposedPortKey])
-	_, oldProxyPort, oldErr := net.SplitHostPort(oldCm.Data[utils.ProxyServerExposedPortKey])
+	_, newProxyPort, newErr := net.SplitHostPort(newCm.Data[util.ProxyServerExposedPortKey])
+	_, oldProxyPort, oldErr := net.SplitHostPort(oldCm.Data[util.ProxyServerExposedPortKey])
 	if newErr == nil && oldErr == nil && newProxyPort != oldProxyPort {
-		h.addExposedGateway(q)
+		addExposedGateway(h.client, q)
 		return
 	}
-	_, newTunnelPort, newErr := net.SplitHostPort(newCm.Data[utils.VPNServerExposedPortKey])
-	_, oldTunnelPort, oldErr := net.SplitHostPort(oldCm.Data[utils.VPNServerExposedPortKey])
+	_, newTunnelPort, newErr := net.SplitHostPort(newCm.Data[util.VPNServerExposedPortKey])
+	_, oldTunnelPort, oldErr := net.SplitHostPort(oldCm.Data[util.VPNServerExposedPortKey])
 	if newErr == nil && oldErr == nil && newTunnelPort != oldTunnelPort {
-		h.addExposedGateway(q)
+		addExposedGateway(h.client, q)
 		return
 	}
 }
@@ -148,16 +147,16 @@ func (h *EnqueueRequestForConfigEvent) Generic(e event.GenericEvent, q workqueue
 	return
 }
 
-func (h *EnqueueRequestForConfigEvent) addExposedGateway(q workqueue.RateLimitingInterface) {
+func addExposedGateway(client client.Client, q workqueue.RateLimitingInterface) {
 	var gwList ravenv1beta1.GatewayList
-	err := h.client.List(context.TODO(), &gwList)
+	err := client.List(context.TODO(), &gwList)
 	if err != nil {
 		return
 	}
 	for _, gw := range gwList.Items {
 		if gw.Spec.ExposeType == ravenv1beta1.ExposeTypeLoadBalancer {
-			klog.V(2).Infof(Format("enqueue gateway %s", gw.GetName()))
-			utils.AddGatewayToWorkQueue(gw.GetName(), q)
+			klog.V(4).Infof(Format("enqueue gateway %s", gw.GetName()))
+			util.AddGatewayToWorkQueue(gw.GetName(), q)
 		}
 	}
 }

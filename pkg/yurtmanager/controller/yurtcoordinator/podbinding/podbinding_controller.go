@@ -34,8 +34,7 @@ import (
 
 	appconfig "github.com/openyurtio/openyurt/cmd/yurt-manager/app/config"
 	"github.com/openyurtio/openyurt/cmd/yurt-manager/names"
-	"github.com/openyurtio/openyurt/pkg/projectinfo"
-	"github.com/openyurtio/openyurt/pkg/yurtmanager/controller/yurtcoordinator/constant"
+	nodeutil "github.com/openyurtio/openyurt/pkg/yurtmanager/controller/util/node"
 )
 
 func init() {
@@ -71,7 +70,7 @@ type ReconcilePodBinding struct {
 
 // Add creates a PodBingding controller and adds it to the Manager with default RBAC. The Manager will set fields on the Controller
 // and Start it when the Manager is Started.
-func Add(c *appconfig.CompletedConfig, mgr manager.Manager) error {
+func Add(ctx context.Context, c *appconfig.CompletedConfig, mgr manager.Manager) error {
 	klog.Infof(Format("podbinding-controller add controller %s", controllerKind.String()))
 	return add(mgr, newReconciler(c, mgr))
 }
@@ -90,23 +89,25 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 		return err
 	}
 
-	err = c.Watch(&source.Kind{Type: &corev1.Node{}}, &handler.EnqueueRequestForObject{})
-	if err != nil {
-		return err
-	}
-
-	klog.V(4).Info(Format("registering the field indexers of podbinding controller"))
-	err = mgr.GetFieldIndexer().IndexField(context.TODO(), &corev1.Pod{}, "spec.nodeName", func(rawObj client.Object) []string {
-		pod, ok := rawObj.(*corev1.Pod)
-		if ok {
-			return []string{pod.Spec.NodeName}
-		}
-		return []string{}
-	})
-	if err != nil {
-		klog.Errorf(Format("failed to register field indexers for podbinding controller, %v", err))
-	}
-	return err
+	return c.Watch(&source.Kind{Type: &corev1.Node{}}, &handler.EnqueueRequestForObject{})
+	//err = c.Watch(&source.Kind{Type: &corev1.Node{}}, &handler.EnqueueRequestForObject{})
+	//if err != nil {
+	//	return err
+	//}
+	//
+	//klog.V(4).Info(Format("registering the field indexers of podbinding controller"))
+	// IndexField for spec.nodeName is registered in NodeLifeCycle, so we remove it here.
+	//err = mgr.GetFieldIndexer().IndexField(context.TODO(), &corev1.Pod{}, "spec.nodeName", func(rawObj client.Object) []string {
+	//	pod, ok := rawObj.(*corev1.Pod)
+	//	if ok {
+	//		return []string{pod.Spec.NodeName}
+	//	}
+	//	return []string{}
+	//})
+	//if err != nil {
+	//	klog.Errorf(Format("could not register field indexers for podbinding controller, %v", err))
+	//}
+	//return err
 }
 
 func (r *ReconcilePodBinding) InjectClient(c client.Client) error {
@@ -152,14 +153,14 @@ func (r *ReconcilePodBinding) processNode(node *corev1.Node) error {
 		}
 
 		// pod binding takes precedence against node autonomy
-		if isPodBoundenToNode(node) {
+		if nodeutil.IsPodBoundenToNode(node) {
 			if err := r.configureTolerationForPod(pod, nil); err != nil {
-				klog.Errorf(Format("failed to configure toleration of pod, %v", err))
+				klog.Errorf(Format("could not configure toleration of pod, %v", err))
 			}
 		} else {
 			tolerationSeconds := int64(defaultTolerationSeconds)
 			if err := r.configureTolerationForPod(pod, &tolerationSeconds); err != nil {
-				klog.Errorf(Format("failed to configure toleration of pod, %v", err))
+				klog.Errorf(Format("could not configure toleration of pod, %v", err))
 			}
 		}
 	}
@@ -176,7 +177,7 @@ func (r *ReconcilePodBinding) getPodsAssignedToNode(name string) ([]corev1.Pod, 
 	podList := &corev1.PodList{}
 	err := r.List(context.TODO(), podList, listOptions)
 	if err != nil {
-		klog.Errorf(Format("failed to get podList for node(%s), %v", name, err))
+		klog.Errorf(Format("could not get podList for node(%s), %v", name, err))
 		return nil, err
 	}
 	return podList.Items, nil
@@ -197,22 +198,12 @@ func (r *ReconcilePodBinding) configureTolerationForPod(pod *corev1.Pod, tolerat
 		}
 		err := r.Update(context.TODO(), pod, &client.UpdateOptions{})
 		if err != nil {
-			klog.Errorf(Format("failed to update toleration of pod(%s/%s), %v", pod.Namespace, pod.Name, err))
+			klog.Errorf(Format("could not update toleration of pod(%s/%s), %v", pod.Namespace, pod.Name, err))
 			return err
 		}
 	}
 
 	return nil
-}
-
-func isPodBoundenToNode(node *corev1.Node) bool {
-	if node.Annotations != nil &&
-		(node.Annotations[projectinfo.GetAutonomyAnnotation()] == "true" ||
-			node.Annotations[constant.PodBindingAnnotation] == "true") {
-		return true
-	}
-
-	return false
 }
 
 func isDaemonSetPodOrStaticPod(pod *corev1.Pod) bool {

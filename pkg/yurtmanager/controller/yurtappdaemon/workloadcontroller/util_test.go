@@ -22,7 +22,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
-	"github.com/openyurtio/openyurt/pkg/apis/apps"
+	"github.com/openyurtio/openyurt/pkg/projectinfo"
 )
 
 const (
@@ -47,9 +47,6 @@ func TestGetWorkloadPrefix(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			t.Logf("\tTestCase: %s", tt.name)
-
 			get := getWorkloadPrefix(tt.controllerName, tt.nodepoolName)
 			t.Logf("expect: %v, get: %v", tt.expect, get)
 			if !reflect.DeepEqual(get, tt.expect) {
@@ -70,16 +67,13 @@ func TestCreateNodeSelectorByNodepoolName(t *testing.T) {
 			"normal",
 			"a",
 			map[string]string{
-				apps.NodePoolLabel: "a",
+				projectinfo.GetNodePoolLabel(): "a",
 			},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			t.Logf("\tTestCase: %s", tt.name)
-
 			get := CreateNodeSelectorByNodepoolName(tt.nodepool)
 			t.Logf("expect: %v, get: %v", tt.expect, get)
 			if !reflect.DeepEqual(get, tt.expect) {
@@ -116,9 +110,6 @@ func TestTaintsToTolerations(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			t.Logf("\tTestCase: %s", tt.name)
-
 			get := TaintsToTolerations(tt.taints)
 			t.Logf("expect: %v, get: %v", tt.expect, get)
 			if !reflect.DeepEqual(get, tt.expect) {

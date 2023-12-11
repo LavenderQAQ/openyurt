@@ -286,7 +286,7 @@ func WithMaxInFlightLimit(handler http.Handler, limit int) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		select {
 		case reqChan <- true:
-			klog.V(2).Infof("start proxying: %s %s, in flight requests: %d", strings.ToLower(req.Method), req.URL.String(), len(reqChan))
+			klog.V(2).Infof("%s, in flight requests: %d", util.ReqString(req), len(reqChan))
 			defer func() {
 				<-reqChan
 				klog.V(5).Infof("%s request completed, left %d requests in flight", util.ReqString(req), len(reqChan))
@@ -318,7 +318,7 @@ func WithRequestTimeout(handler http.Handler) http.Handler {
 				if info.Verb == "list" || info.Verb == "watch" {
 					opts := metainternalversion.ListOptions{}
 					if err := metainternalversionscheme.ParameterCodec.DecodeParameters(req.URL.Query(), metav1.SchemeGroupVersion, &opts); err != nil {
-						klog.Errorf("failed to decode parameter for list/watch request: %s", util.ReqString(req))
+						klog.Errorf("could not decode parameter for list/watch request: %s", util.ReqString(req))
 						Err(errors.NewBadRequest(err.Error()), w, req)
 						return
 					}
@@ -372,7 +372,7 @@ func WithSaTokenSubstitute(handler http.Handler, tenantMgr tenant.Interface) htt
 						}
 
 					} else {
-						klog.Errorf("failed to parse tenant ns from token, token %s, sub: %s", oldToken, oldClaim.Subject)
+						klog.Errorf("could not parse tenant ns from token, token %s, sub: %s", oldToken, oldClaim.Subject)
 					}
 				}
 			}

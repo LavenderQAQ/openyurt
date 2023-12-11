@@ -30,8 +30,8 @@ import (
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/openyurtio/openyurt/pkg/apis"
-	"github.com/openyurtio/openyurt/pkg/apis/apps"
 	appsv1beta1 "github.com/openyurtio/openyurt/pkg/apis/apps/v1beta1"
+	"github.com/openyurtio/openyurt/pkg/projectinfo"
 )
 
 func TestValidateCreate(t *testing.T) {
@@ -131,7 +131,7 @@ func TestValidateUpdate(t *testing.T) {
 					Type: "invalid type",
 				},
 			},
-			errcode: http.StatusUnprocessableEntity,
+			errcode: http.StatusForbidden,
 		},
 		"type is changed": {
 			oldPool: &appsv1beta1.NodePool{
@@ -144,7 +144,7 @@ func TestValidateUpdate(t *testing.T) {
 					Type: appsv1beta1.Cloud,
 				},
 			},
-			errcode: http.StatusUnprocessableEntity,
+			errcode: http.StatusForbidden,
 		},
 		"host network is changed": {
 			oldPool: &appsv1beta1.NodePool{
@@ -159,7 +159,7 @@ func TestValidateUpdate(t *testing.T) {
 					HostNetwork: true,
 				},
 			},
-			errcode: http.StatusUnprocessableEntity,
+			errcode: http.StatusForbidden,
 		},
 	}
 
@@ -185,7 +185,7 @@ func prepareNodes() []client.Object {
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "node1",
 				Labels: map[string]string{
-					apps.NodePoolLabel: "hangzhou",
+					projectinfo.GetNodePoolLabel(): "hangzhou",
 				},
 			},
 			Status: corev1.NodeStatus{
@@ -258,7 +258,7 @@ func TestValidateDelete(t *testing.T) {
 					Name: "hangzhou",
 				},
 			},
-			errcode: http.StatusUnprocessableEntity,
+			errcode: http.StatusForbidden,
 		},
 		"it is not a nodepool": {
 			pool:    &corev1.Node{},

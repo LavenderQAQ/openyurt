@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"net"
 	"strconv"
-	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -44,8 +43,7 @@ import (
 	"github.com/openyurtio/openyurt/cmd/yurt-manager/names"
 	"github.com/openyurtio/openyurt/pkg/apis/raven"
 	ravenv1beta1 "github.com/openyurtio/openyurt/pkg/apis/raven/v1beta1"
-	common "github.com/openyurtio/openyurt/pkg/yurtmanager/controller/raven"
-	"github.com/openyurtio/openyurt/pkg/yurtmanager/controller/raven/utils"
+	"github.com/openyurtio/openyurt/pkg/yurtmanager/controller/raven/util"
 )
 
 const (
@@ -59,36 +57,25 @@ func Format(format string, args ...interface{}) string {
 
 // Add creates a new Service Controller and adds it to the Manager with default RBAC. The Manager will set fields on the Controller
 // and Start it when the Manager is Started.
-func Add(c *appconfig.CompletedConfig, mgr manager.Manager) error {
+func Add(ctx context.Context, c *appconfig.CompletedConfig, mgr manager.Manager) error {
 	return add(mgr, newReconciler(mgr))
 }
 
 var _ reconcile.Reconciler = &ReconcileService{}
 
-type serviceInformation struct {
-	mu   sync.Mutex
+type serviceRecord struct {
 	data map[string]string
 }
 
-func newServiceInfo() *serviceInformation {
-	return &serviceInformation{data: make(map[string]string, 0)}
+func newServiceRecord() *serviceRecord {
+	return &serviceRecord{data: make(map[string]string, 0)}
 }
-func (s *serviceInformation) write(key, val string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (s *serviceRecord) write(key, val string) {
 	s.data[key] = val
 }
 
-func (s *serviceInformation) read(key string) string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (s *serviceRecord) read(key string) string {
 	return s.data[key]
-}
-
-func (s *serviceInformation) cleanup() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.data = make(map[string]string)
 }
 
 // ReconcileService reconciles a Gateway object
@@ -96,8 +83,6 @@ type ReconcileService struct {
 	client.Client
 	scheme   *runtime.Scheme
 	recorder record.EventRecorder
-	option   utils.Option
-	svcInfo  *serviceInformation
 }
 
 // newReconciler returns a new reconcile.Reconciler
@@ -106,8 +91,6 @@ func newReconciler(mgr manager.Manager) reconcile.Reconciler {
 		Client:   mgr.GetClient(),
 		scheme:   mgr.GetScheme(),
 		recorder: mgr.GetEventRecorderFor(names.GatewayPublicServiceController),
-		option:   utils.NewOption(),
-		svcInfo:  newServiceInfo(),
 	}
 }
 
@@ -115,7 +98,7 @@ func newReconciler(mgr manager.Manager) reconcile.Reconciler {
 func add(mgr manager.Manager, r reconcile.Reconciler) error {
 	// Create a new controller
 	c, err := controller.New(names.GatewayPublicServiceController, mgr, controller.Options{
-		Reconciler: r, MaxConcurrentReconciles: common.ConcurrentReconciles,
+		Reconciler: r, MaxConcurrentReconciles: util.ConcurrentReconciles,
 	})
 	if err != nil {
 		return err
@@ -134,10 +117,10 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 			if !ok {
 				return false
 			}
-			if cm.GetNamespace() != utils.WorkingNamespace {
+			if cm.GetNamespace() != util.WorkingNamespace {
 				return false
 			}
-			if cm.GetName() != utils.RavenAgentConfig {
+			if cm.GetName() != util.RavenAgentConfig {
 				return false
 			}
 			return true
@@ -152,69 +135,31 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 // Reconcile reads that state of the cluster for a Gateway object and makes changes based on the state read
 // and what is in the Gateway.Spec
 func (r *ReconcileService) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
-	klog.V(2).Info(Format("started reconciling public service for gateway %s", req.Name))
-	defer klog.V(2).Info(Format("finished reconciling public service for gateway %s", req.Name))
+	enableProxy, enableTunnel := util.CheckServer(ctx, r.Client)
 	gw, err := r.getGateway(ctx, req)
-	if err != nil && !apierrs.IsNotFound(err) {
-		klog.Error(Format("failed to get gateway %s, error %s", req.Name, err.Error()))
-		return reconcile.Result{}, err
+	if err != nil {
+		if apierrs.IsNotFound(err) {
+			gw = &ravenv1beta1.Gateway{ObjectMeta: metav1.ObjectMeta{Name: req.Name}}
+			enableTunnel = false
+			enableProxy = false
+		} else {
+			klog.Error(Format("could not get gateway %s, error %s", req.Name, err.Error()))
+			return reconcile.Result{}, err
+		}
 	}
-	if apierrs.IsNotFound(err) {
-		gw = &ravenv1beta1.Gateway{ObjectMeta: metav1.ObjectMeta{Name: req.Name}}
-	}
-	r.svcInfo.cleanup()
-	r.setOptions(ctx, gw, apierrs.IsNotFound(err))
-	if err := r.reconcileService(ctx, gw.DeepCopy()); err != nil {
+	svcRecord := newServiceRecord()
+	if err := r.reconcileService(ctx, gw.DeepCopy(), svcRecord, enableTunnel, enableProxy); err != nil {
 		err = fmt.Errorf(Format("unable to reconcile service: %s", err))
 		klog.Error(err.Error())
 		return reconcile.Result{Requeue: true, RequeueAfter: 2 * time.Second}, err
 	}
 
-	if err := r.reconcileEndpoints(ctx, gw.DeepCopy()); err != nil {
+	if err := r.reconcileEndpoints(ctx, gw.DeepCopy(), svcRecord, enableTunnel, enableProxy); err != nil {
 		err = fmt.Errorf(Format("unable to reconcile endpoint: %s", err))
+		klog.Error(err.Error())
 		return reconcile.Result{Requeue: true, RequeueAfter: 2 * time.Second}, err
 	}
 	return reconcile.Result{}, nil
-}
-
-func (r *ReconcileService) setOptions(ctx context.Context, gw *ravenv1beta1.Gateway, isNotFound bool) {
-	r.option.SetProxyOption(true)
-	r.option.SetTunnelOption(true)
-	if isNotFound {
-		r.option.SetProxyOption(false)
-		r.option.SetTunnelOption(false)
-		klog.V(4).Info(Format("set option for proxy (%t) and tunnel (%t), reason gateway %s is not found",
-			false, false, gw.GetName()))
-		return
-	}
-
-	if gw.DeletionTimestamp != nil {
-		r.option.SetProxyOption(false)
-		r.option.SetTunnelOption(false)
-		klog.V(4).Info(Format("set option for proxy (%t) and tunnel (%t), reason: gateway %s is deleted ",
-			false, false, gw.GetName()))
-		return
-	}
-
-	if gw.Spec.ExposeType != ravenv1beta1.ExposeTypeLoadBalancer {
-		r.option.SetProxyOption(false)
-		r.option.SetTunnelOption(false)
-		klog.V(4).Info(Format("set option for proxy (%t) and tunnel (%t), reason: gateway %s exposed type is %s ",
-			false, false, gw.GetName(), gw.Spec.ExposeType))
-		return
-	}
-
-	enableProxy, enableTunnel := utils.CheckServer(ctx, r.Client)
-	if !enableTunnel {
-		r.option.SetTunnelOption(enableTunnel)
-		klog.V(4).Info(Format("set option for tunnel (%t), reason: raven-cfg close tunnel ", false))
-	}
-
-	if !enableProxy {
-		r.option.SetProxyOption(enableProxy)
-		klog.V(4).Info(Format("set option for tunnel (%t), reason: raven-cfg close proxy ", false))
-	}
-	return
 }
 
 func (r *ReconcileService) getGateway(ctx context.Context, req reconcile.Request) (*ravenv1beta1.Gateway, error) {
@@ -226,78 +171,58 @@ func (r *ReconcileService) getGateway(ctx context.Context, req reconcile.Request
 	return gw.DeepCopy(), nil
 }
 
-func (r *ReconcileService) generateServiceName(services []corev1.Service) {
+func recordServiceNames(services []corev1.Service, record *serviceRecord) {
 	for _, svc := range services {
-		epName := svc.Labels[utils.LabelCurrentGatewayEndpoints]
+		epName := svc.Labels[util.LabelCurrentGatewayEndpoints]
 		epType := svc.Labels[raven.LabelCurrentGatewayType]
 		if epName == "" || epType == "" {
 			continue
 		}
-		r.svcInfo.write(formatKey(epName, epType), svc.GetName())
+		record.write(formatKey(epName, epType), svc.GetName())
 	}
 	return
 }
 
-func (r *ReconcileService) reconcileService(ctx context.Context, gw *ravenv1beta1.Gateway) error {
-	enableProxy := r.option.GetProxyOption()
+func (r *ReconcileService) reconcileService(ctx context.Context, gw *ravenv1beta1.Gateway, record *serviceRecord, enableTunnel, enableProxy bool) error {
 	if enableProxy {
-		klog.V(2).Info(Format("start manage proxy service for gateway %s", gw.GetName()))
-		defer klog.V(2).Info(Format("finish manage proxy service for gateway %s", gw.GetName()))
-		if err := r.manageService(ctx, gw, ravenv1beta1.Proxy); err != nil {
-			return fmt.Errorf("failed to manage service for proxy server %s", err.Error())
+		if err := r.manageService(ctx, gw, ravenv1beta1.Proxy, record); err != nil {
+			return fmt.Errorf("could not manage service for proxy, error %s", err.Error())
 		}
 	} else {
-		klog.V(2).Info(Format("start clear proxy service for gateway %s", gw.GetName()))
-		defer klog.V(2).Info(Format("finish clear proxy service for gateway %s", gw.GetName()))
 		if err := r.clearService(ctx, gw.GetName(), ravenv1beta1.Proxy); err != nil {
-			return fmt.Errorf("failed to clear service for proxy server %s", err.Error())
+			return fmt.Errorf("could not clear service for proxy, error %s", err.Error())
 		}
 	}
 
-	enableTunnel := r.option.GetTunnelOption()
 	if enableTunnel {
-		klog.V(2).Info(Format("start manage tunnel service for gateway %s", gw.GetName()))
-		defer klog.V(2).Info(Format("finish manage tunnel service for gateway %s", gw.GetName()))
-		if err := r.manageService(ctx, gw, ravenv1beta1.Tunnel); err != nil {
-			return fmt.Errorf("failed to manage service for tunnel server %s", err.Error())
+		if err := r.manageService(ctx, gw, ravenv1beta1.Tunnel, record); err != nil {
+			return fmt.Errorf("could not manage service for tunnel, error %s", err.Error())
 		}
 	} else {
-		klog.V(2).Info(Format("start clear tunnel service for gateway %s", gw.GetName()))
-		defer klog.V(2).Info(Format("finish clear tunnel service for gateway %s", gw.GetName()))
 		if err := r.clearService(ctx, gw.GetName(), ravenv1beta1.Tunnel); err != nil {
-			return fmt.Errorf("failed to clear service for tunnel server %s", err.Error())
+			return fmt.Errorf("could not clear service for tunnel, error %s", err.Error())
 		}
 	}
 	return nil
 }
 
-func (r *ReconcileService) reconcileEndpoints(ctx context.Context, gw *ravenv1beta1.Gateway) error {
-	enableProxy := r.option.GetProxyOption()
+func (r *ReconcileService) reconcileEndpoints(ctx context.Context, gw *ravenv1beta1.Gateway, record *serviceRecord, enableTunnel, enableProxy bool) error {
 	if enableProxy {
-		klog.V(2).Info(Format("start manage proxy service endpoints for gateway %s", gw.GetName()))
-		defer klog.V(2).Info(Format("finish manage proxy service endpoints for gateway %s", gw.GetName()))
-		if err := r.manageEndpoints(ctx, gw, ravenv1beta1.Proxy); err != nil {
-			return fmt.Errorf("failed to manage endpoints for proxy server %s", err.Error())
+		if err := r.manageEndpoints(ctx, gw, ravenv1beta1.Proxy, record); err != nil {
+			return fmt.Errorf("could not manage endpoints for proxy server %s", err.Error())
 		}
 	} else {
-		klog.V(2).Info(Format("start clear proxy service endpoints for gateway %s", gw.GetName()))
-		defer klog.V(2).Info(Format("finish clear proxy service endpoints for gateway %s", gw.GetName()))
 		if err := r.clearEndpoints(ctx, gw.GetName(), ravenv1beta1.Proxy); err != nil {
-			return fmt.Errorf("failed to clear endpoints for proxy server %s", err.Error())
+			return fmt.Errorf("could not clear endpoints for proxy server %s", err.Error())
 		}
 	}
-	enableTunnel := r.option.GetTunnelOption()
 	if enableTunnel {
-		klog.V(2).Info(Format("start manage tunnel service endpoints for gateway %s", gw.GetName()))
-		defer klog.V(2).Info(Format("finish manage tunnel service endpoints for gateway %s", gw.GetName()))
-		if err := r.manageEndpoints(ctx, gw, ravenv1beta1.Tunnel); err != nil {
-			return fmt.Errorf("failed to manage endpoints for tunnel server %s", err.Error())
+		if err := r.manageEndpoints(ctx, gw, ravenv1beta1.Tunnel, record); err != nil {
+			return fmt.Errorf("could not manage endpoints for tunnel server %s", err.Error())
 		}
 	} else {
-		klog.V(2).Info(Format("start clear tunnel service endpoints for gateway %s", gw.GetName()))
-		defer klog.V(2).Info(Format("finish clear tunnel service endpoints for gateway %s", gw.GetName()))
 		if err := r.clearEndpoints(ctx, gw.GetName(), ravenv1beta1.Tunnel); err != nil {
-			return fmt.Errorf("failed to clear endpoints for tunnel server %s", err.Error())
+			return fmt.Errorf("could not clear endpoints for tunnel server %s", err.Error())
 		}
 	}
 	return nil
@@ -306,13 +231,13 @@ func (r *ReconcileService) reconcileEndpoints(ctx context.Context, gw *ravenv1be
 func (r *ReconcileService) clearService(ctx context.Context, gatewayName, gatewayType string) error {
 	svcList, err := r.listService(ctx, gatewayName, gatewayType)
 	if err != nil {
-		return fmt.Errorf("failed to list service for gateway %s", gatewayName)
+		return fmt.Errorf("could not list service for gateway %s", gatewayName)
 	}
 	for _, svc := range svcList.Items {
 		err := r.Delete(ctx, svc.DeepCopy())
 		if err != nil {
 			r.recorder.Event(svc.DeepCopy(), corev1.EventTypeWarning, ServiceDeleteFailed,
-				fmt.Sprintf("The gateway %s %s server is not need to exposed by loadbalancer, failed to delete service %s/%s",
+				fmt.Sprintf("The gateway %s %s server is not need to exposed by loadbalancer, could not delete service %s/%s",
 					gatewayName, gatewayType, svc.GetNamespace(), svc.GetName()))
 			continue
 		}
@@ -323,13 +248,13 @@ func (r *ReconcileService) clearService(ctx context.Context, gatewayName, gatewa
 func (r *ReconcileService) clearEndpoints(ctx context.Context, gatewayName, gatewayType string) error {
 	epsList, err := r.listEndpoints(ctx, gatewayName, gatewayType)
 	if err != nil {
-		return fmt.Errorf("failed to list endpoints for gateway %s", gatewayName)
+		return fmt.Errorf("could not list endpoints for gateway %s", gatewayName)
 	}
 	for _, eps := range epsList.Items {
 		err := r.Delete(ctx, eps.DeepCopy())
 		if err != nil {
 			r.recorder.Event(eps.DeepCopy(), corev1.EventTypeWarning, ServiceDeleteFailed,
-				fmt.Sprintf("The gateway %s %s server is not need to exposed by loadbalancer, failed to delete endpoints %s/%s",
+				fmt.Sprintf("The gateway %s %s server is not need to exposed by loadbalancer, could not delete endpoints %s/%s",
 					gatewayName, gatewayType, eps.GetNamespace(), eps.GetName()))
 			continue
 		}
@@ -337,7 +262,7 @@ func (r *ReconcileService) clearEndpoints(ctx context.Context, gatewayName, gate
 	return nil
 }
 
-func (r *ReconcileService) manageService(ctx context.Context, gateway *ravenv1beta1.Gateway, gatewayType string) error {
+func (r *ReconcileService) manageService(ctx context.Context, gateway *ravenv1beta1.Gateway, gatewayType string, record *serviceRecord) error {
 	curSvcList, err := r.listService(ctx, gateway.GetName(), gatewayType)
 	if err != nil {
 		return fmt.Errorf("failed list service for gateway %s type %s , error %s", gateway.GetName(), gatewayType, err.Error())
@@ -345,7 +270,7 @@ func (r *ReconcileService) manageService(ctx context.Context, gateway *ravenv1be
 	proxyPort, tunnelPort := r.getTargetPort()
 	specSvcList := acquiredSpecService(gateway, gatewayType, proxyPort, tunnelPort)
 	addSvc, updateSvc, deleteSvc := classifyService(curSvcList, specSvcList)
-	r.generateServiceName(specSvcList.Items)
+	recordServiceNames(specSvcList.Items, record)
 	for i := 0; i < len(addSvc); i++ {
 		if err := r.Create(ctx, addSvc[i]); err != nil {
 			if apierrs.IsAlreadyExists(err) {
@@ -368,12 +293,12 @@ func (r *ReconcileService) manageService(ctx context.Context, gateway *ravenv1be
 	return nil
 }
 
-func (r *ReconcileService) manageEndpoints(ctx context.Context, gateway *ravenv1beta1.Gateway, gatewayType string) error {
+func (r *ReconcileService) manageEndpoints(ctx context.Context, gateway *ravenv1beta1.Gateway, gatewayType string, record *serviceRecord) error {
 	currEpsList, err := r.listEndpoints(ctx, gateway.GetName(), gatewayType)
 	if err != nil {
 		return fmt.Errorf("failed list service for gateway %s type %s , error %s", gateway.GetName(), gatewayType, err.Error())
 	}
-	specEpsList := r.acquiredSpecEndpoints(ctx, gateway, gatewayType)
+	specEpsList := r.acquiredSpecEndpoints(ctx, gateway, gatewayType, record)
 	addEps, updateEps, deleteEps := classifyEndpoints(currEpsList, specEpsList)
 	for i := 0; i < len(addEps); i++ {
 		if err := r.Create(ctx, addEps[i]); err != nil {
@@ -401,19 +326,19 @@ func (r *ReconcileService) getTargetPort() (proxyPort, tunnelPort int32) {
 	proxyPort = ravenv1beta1.DefaultProxyServerExposedPort
 	tunnelPort = ravenv1beta1.DefaultTunnelServerExposedPort
 	var cm corev1.ConfigMap
-	err := r.Get(context.TODO(), types.NamespacedName{Namespace: utils.WorkingNamespace, Name: utils.RavenAgentConfig}, &cm)
+	err := r.Get(context.TODO(), types.NamespacedName{Namespace: util.WorkingNamespace, Name: util.RavenAgentConfig}, &cm)
 	if err != nil {
 		return
 	}
 	if cm.Data == nil {
 		return
 	}
-	_, proxyExposedPort, err := net.SplitHostPort(cm.Data[utils.ProxyServerExposedPortKey])
+	_, proxyExposedPort, err := net.SplitHostPort(cm.Data[util.ProxyServerExposedPortKey])
 	if err == nil {
 		proxy, _ := strconv.Atoi(proxyExposedPort)
 		proxyPort = int32(proxy)
 	}
-	_, tunnelExposedPort, err := net.SplitHostPort(cm.Data[utils.VPNServerExposedPortKey])
+	_, tunnelExposedPort, err := net.SplitHostPort(cm.Data[util.VPNServerExposedPortKey])
 	if err == nil {
 		tunnel, _ := strconv.Atoi(tunnelExposedPort)
 		tunnelPort = int32(tunnel)
@@ -455,7 +380,7 @@ func (r *ReconcileService) listEndpoints(ctx context.Context, gatewayName, gatew
 	return &epsList, nil
 }
 
-func (r *ReconcileService) acquiredSpecEndpoints(ctx context.Context, gateway *ravenv1beta1.Gateway, gatewayType string) *corev1.EndpointsList {
+func (r *ReconcileService) acquiredSpecEndpoints(ctx context.Context, gateway *ravenv1beta1.Gateway, gatewayType string, record *serviceRecord) *corev1.EndpointsList {
 	proxyPort, tunnelPort := r.getTargetPort()
 	endpoints := make([]corev1.Endpoints, 0)
 	for _, aep := range gateway.Status.ActiveEndpoints {
@@ -468,18 +393,18 @@ func (r *ReconcileService) acquiredSpecEndpoints(ctx context.Context, gateway *r
 		}
 		switch aep.Type {
 		case ravenv1beta1.Proxy:
-			name := r.svcInfo.read(formatKey(aep.NodeName, ravenv1beta1.Proxy))
+			name := record.read(formatKey(aep.NodeName, ravenv1beta1.Proxy))
 			if name == "" {
 				continue
 			}
 			endpoints = append(endpoints, corev1.Endpoints{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      name,
-					Namespace: utils.WorkingNamespace,
+					Namespace: util.WorkingNamespace,
 					Labels: map[string]string{
-						raven.LabelCurrentGateway:          gateway.GetName(),
-						raven.LabelCurrentGatewayType:      ravenv1beta1.Proxy,
-						utils.LabelCurrentGatewayEndpoints: aep.NodeName,
+						raven.LabelCurrentGateway:         gateway.GetName(),
+						raven.LabelCurrentGatewayType:     ravenv1beta1.Proxy,
+						util.LabelCurrentGatewayEndpoints: aep.NodeName,
 					},
 				},
 				Subsets: []corev1.EndpointSubset{
@@ -495,18 +420,18 @@ func (r *ReconcileService) acquiredSpecEndpoints(ctx context.Context, gateway *r
 				},
 			})
 		case ravenv1beta1.Tunnel:
-			name := r.svcInfo.read(formatKey(aep.NodeName, ravenv1beta1.Tunnel))
+			name := record.read(formatKey(aep.NodeName, ravenv1beta1.Tunnel))
 			if name == "" {
 				continue
 			}
 			endpoints = append(endpoints, corev1.Endpoints{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      name,
-					Namespace: utils.WorkingNamespace,
+					Namespace: util.WorkingNamespace,
 					Labels: map[string]string{
-						raven.LabelCurrentGateway:          gateway.GetName(),
-						raven.LabelCurrentGatewayType:      ravenv1beta1.Tunnel,
-						utils.LabelCurrentGatewayEndpoints: aep.NodeName,
+						raven.LabelCurrentGateway:         gateway.GetName(),
+						raven.LabelCurrentGatewayType:     ravenv1beta1.Tunnel,
+						util.LabelCurrentGatewayEndpoints: aep.NodeName,
 					},
 				},
 				Subsets: []corev1.EndpointSubset{
@@ -530,15 +455,18 @@ func (r *ReconcileService) getEndpointsAddress(ctx context.Context, name string)
 	var node corev1.Node
 	err := r.Get(ctx, types.NamespacedName{Name: name}, &node)
 	if err != nil {
-		klog.Errorf(Format("failed to get node %s for get active endpoints address, error %s", name, err.Error()))
+		klog.Errorf(Format("could not get node %s for get active endpoints address, error %s", name, err.Error()))
 		return nil, err
 	}
-	return &corev1.EndpointAddress{NodeName: func(n corev1.Node) *string { return &n.Name }(node), IP: utils.GetNodeInternalIP(node)}, nil
+	return &corev1.EndpointAddress{NodeName: func(n corev1.Node) *string { return &n.Name }(node), IP: util.GetNodeInternalIP(node)}, nil
 }
 
 func acquiredSpecService(gateway *ravenv1beta1.Gateway, gatewayType string, proxyPort, tunnelPort int32) *corev1.ServiceList {
 	services := make([]corev1.Service, 0)
 	if gateway == nil {
+		return &corev1.ServiceList{Items: services}
+	}
+	if gateway.Spec.ExposeType != ravenv1beta1.ExposeTypeLoadBalancer {
 		return &corev1.ServiceList{Items: services}
 	}
 	for _, aep := range gateway.Status.ActiveEndpoints {
@@ -552,13 +480,14 @@ func acquiredSpecService(gateway *ravenv1beta1.Gateway, gatewayType string, prox
 		case ravenv1beta1.Proxy:
 			services = append(services, corev1.Service{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      utils.FormatName(fmt.Sprintf("%s-%s", utils.GatewayProxyServiceNamePrefix, gateway.GetName())),
-					Namespace: utils.WorkingNamespace,
+					Name:      util.FormatName(fmt.Sprintf("%s-%s", util.GatewayProxyServiceNamePrefix, gateway.GetName())),
+					Namespace: util.WorkingNamespace,
 					Labels: map[string]string{
-						raven.LabelCurrentGateway:          gateway.GetName(),
-						raven.LabelCurrentGatewayType:      ravenv1beta1.Proxy,
-						utils.LabelCurrentGatewayEndpoints: aep.NodeName,
+						raven.LabelCurrentGateway:         gateway.GetName(),
+						raven.LabelCurrentGatewayType:     ravenv1beta1.Proxy,
+						util.LabelCurrentGatewayEndpoints: aep.NodeName,
 					},
+					Annotations: map[string]string{"svc.openyurt.io/discard": "true"},
 				},
 				Spec: corev1.ServiceSpec{
 					Type:                  corev1.ServiceTypeLoadBalancer,
@@ -578,13 +507,14 @@ func acquiredSpecService(gateway *ravenv1beta1.Gateway, gatewayType string, prox
 		case ravenv1beta1.Tunnel:
 			services = append(services, corev1.Service{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      utils.FormatName(fmt.Sprintf("%s-%s", utils.GatewayTunnelServiceNamePrefix, gateway.GetName())),
-					Namespace: utils.WorkingNamespace,
+					Name:      util.FormatName(fmt.Sprintf("%s-%s", util.GatewayTunnelServiceNamePrefix, gateway.GetName())),
+					Namespace: util.WorkingNamespace,
 					Labels: map[string]string{
-						raven.LabelCurrentGateway:          gateway.GetName(),
-						raven.LabelCurrentGatewayType:      ravenv1beta1.Tunnel,
-						utils.LabelCurrentGatewayEndpoints: aep.NodeName,
+						raven.LabelCurrentGateway:         gateway.GetName(),
+						raven.LabelCurrentGatewayType:     ravenv1beta1.Tunnel,
+						util.LabelCurrentGatewayEndpoints: aep.NodeName,
 					},
+					Annotations: map[string]string{"svc.openyurt.io/discard": "true"},
 				},
 				Spec: corev1.ServiceSpec{
 					Type:                  corev1.ServiceTypeLoadBalancer,
@@ -613,7 +543,7 @@ func classifyService(current, spec *corev1.ServiceList) (added, updated, deleted
 
 	getKey := func(svc *corev1.Service) string {
 		epType := svc.Labels[raven.LabelCurrentGatewayType]
-		epName := svc.Labels[utils.LabelCurrentGatewayEndpoints]
+		epName := svc.Labels[util.LabelCurrentGatewayEndpoints]
 		if epType == "" {
 			return ""
 		}
@@ -656,7 +586,7 @@ func classifyEndpoints(current, spec *corev1.EndpointsList) (added, updated, del
 
 	getKey := func(ep *corev1.Endpoints) string {
 		epType := ep.Labels[raven.LabelCurrentGatewayType]
-		epName := ep.Labels[utils.LabelCurrentGatewayEndpoints]
+		epName := ep.Labels[util.LabelCurrentGatewayEndpoints]
 		if epType == "" {
 			return ""
 		}

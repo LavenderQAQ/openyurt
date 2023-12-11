@@ -17,18 +17,22 @@ limitations under the License.
 package controller
 
 import (
+	"context"
 	"fmt"
 
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/controller-manager/app"
 	"k8s.io/klog/v2"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	"github.com/openyurtio/openyurt/cmd/yurt-manager/app/config"
 	"github.com/openyurtio/openyurt/cmd/yurt-manager/names"
 	"github.com/openyurtio/openyurt/pkg/yurtmanager/controller/csrapprover"
 	"github.com/openyurtio/openyurt/pkg/yurtmanager/controller/daemonpodupdater"
+	"github.com/openyurtio/openyurt/pkg/yurtmanager/controller/nodelifecycle"
 	"github.com/openyurtio/openyurt/pkg/yurtmanager/controller/nodepool"
 	"github.com/openyurtio/openyurt/pkg/yurtmanager/controller/platformadmin"
 	"github.com/openyurtio/openyurt/pkg/yurtmanager/controller/raven/dns"
@@ -46,7 +50,7 @@ import (
 	"github.com/openyurtio/openyurt/pkg/yurtmanager/controller/yurtstaticset"
 )
 
-type InitFunc func(*config.CompletedConfig, manager.Manager) error
+type InitFunc func(context.Context, *config.CompletedConfig, manager.Manager) error
 
 type ControllerInitializersFunc func() (initializers map[string]InitFunc)
 
@@ -90,6 +94,7 @@ func NewControllerInitializers() map[string]InitFunc {
 	register(names.GatewayDNSController, dns.Add)
 	register(names.GatewayInternalServiceController, gatewayinternalservice.Add)
 	register(names.GatewayPublicServiceController, gatewaypublicservice.Add)
+	register(names.NodeLifeCycleController, nodelifecycle.Add)
 
 	return controllers
 }
@@ -99,18 +104,38 @@ func NewControllerInitializers() map[string]InitFunc {
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=events,verbs=get;list;watch;create;update;patch;delete
 
-func SetupWithManager(c *config.CompletedConfig, m manager.Manager) error {
+func SetupWithManager(ctx context.Context, c *config.CompletedConfig, m manager.Manager) error {
 	for controllerName, fn := range NewControllerInitializers() {
 		if !app.IsControllerEnabled(controllerName, ControllersDisabledByDefault, c.ComponentConfig.Generic.Controllers) {
 			klog.Warningf("Controller %v is disabled", controllerName)
 			continue
 		}
 
-		if err := fn(c, m); err != nil {
+		if err := fn(ctx, c, m); err != nil {
 			if kindMatchErr, ok := err.(*meta.NoKindMatchError); ok {
 				klog.Infof("CRD %v is not installed, its controller will perform noops!", kindMatchErr.GroupKind)
 				continue
 			}
+			return err
+		} else {
+			klog.Infof("controller %s is added", controllerName)
+		}
+	}
+
+	if app.IsControllerEnabled(names.NodeLifeCycleController, ControllersDisabledByDefault, c.ComponentConfig.Generic.Controllers) ||
+		app.IsControllerEnabled(names.PodBindingController, ControllersDisabledByDefault, c.ComponentConfig.Generic.Controllers) {
+		// Register spec.NodeName field indexers
+		if err := m.GetFieldIndexer().IndexField(context.TODO(), &v1.Pod{}, "spec.nodeName", func(rawObj client.Object) []string {
+			pod, ok := rawObj.(*v1.Pod)
+			if !ok {
+				return []string{}
+			}
+			if len(pod.Spec.NodeName) == 0 {
+				return []string{}
+			}
+			return []string{pod.Spec.NodeName}
+		}); err != nil {
+			klog.Errorf("could not register spec.NodeName field indexers %v", err)
 			return err
 		}
 	}

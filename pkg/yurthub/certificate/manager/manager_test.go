@@ -108,6 +108,8 @@ func TestReady(t *testing.T) {
 
 	if err != nil {
 		t.Errorf("certificates are not ready, %v", err)
+		mgr.Stop()
+		return
 	}
 
 	mgr.Stop()
@@ -127,8 +129,14 @@ func TestReady(t *testing.T) {
 		return
 	}
 	newMgr.Start()
-	if !newMgr.Ready() {
-		t.Errorf("certificates can not be reused")
+	err = wait.PollImmediate(2*time.Second, 1*time.Minute, func() (done bool, err error) {
+		if mgr.Ready() {
+			return true, nil
+		}
+		return false, nil
+	})
+	if err != nil {
+		t.Errorf("certificates are not reused, %v", err)
 	}
 	newMgr.Stop()
 

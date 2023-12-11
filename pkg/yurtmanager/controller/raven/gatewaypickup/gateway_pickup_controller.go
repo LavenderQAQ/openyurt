@@ -44,9 +44,8 @@ import (
 	calicov3 "github.com/openyurtio/openyurt/pkg/apis/calico/v3"
 	"github.com/openyurtio/openyurt/pkg/apis/raven"
 	ravenv1beta1 "github.com/openyurtio/openyurt/pkg/apis/raven/v1beta1"
-	common "github.com/openyurtio/openyurt/pkg/yurtmanager/controller/raven"
 	"github.com/openyurtio/openyurt/pkg/yurtmanager/controller/raven/gatewaypickup/config"
-	"github.com/openyurtio/openyurt/pkg/yurtmanager/controller/raven/utils"
+	"github.com/openyurtio/openyurt/pkg/yurtmanager/controller/raven/util"
 	nodeutil "github.com/openyurtio/openyurt/pkg/yurtmanager/controller/util/node"
 )
 
@@ -67,7 +66,7 @@ const (
 
 // Add creates a new Gateway Controller and adds it to the Manager with default RBAC. The Manager will set fields on the Controller
 // and Start it when the Manager is Started.
-func Add(c *appconfig.CompletedConfig, mgr manager.Manager) error {
+func Add(ctx context.Context, c *appconfig.CompletedConfig, mgr manager.Manager) error {
 	if _, err := mgr.GetRESTMapper().KindFor(controllerResource); err != nil {
 		klog.Infof("resource %s doesn't exist", controllerResource.String())
 		return err
@@ -100,7 +99,7 @@ func newReconciler(c *appconfig.CompletedConfig, mgr manager.Manager) reconcile.
 func add(mgr manager.Manager, r reconcile.Reconciler) error {
 	// Create a new controller
 	c, err := controller.New(names.GatewayPickupController, mgr, controller.Options{
-		Reconciler: r, MaxConcurrentReconciles: common.ConcurrentReconciles,
+		Reconciler: r, MaxConcurrentReconciles: util.ConcurrentReconciles,
 	})
 	if err != nil {
 		return err
@@ -124,10 +123,10 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 			if !ok {
 				return false
 			}
-			if cm.GetNamespace() != utils.WorkingNamespace {
+			if cm.GetNamespace() != util.WorkingNamespace {
 				return false
 			}
-			if cm.GetName() != utils.RavenGlobalConfig {
+			if cm.GetName() != util.RavenGlobalConfig {
 				return false
 			}
 			return true
@@ -151,16 +150,9 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 // and what is in the Gateway.Spec
 func (r *ReconcileGateway) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
 
-	// Note !!!!!!!!!!
-	// We strongly recommend use Format() to  encapsulation because Format() can print logs by module
-	// @kadisi
-	klog.V(2).Info(Format("started reconciling Gateway %s/%s", req.Namespace, req.Name))
-	defer func() {
-		klog.V(2).Info(Format("finished reconciling Gateway %s/%s", req.Namespace, req.Name))
-	}()
-
 	var gw ravenv1beta1.Gateway
 	if err := r.Get(ctx, req.NamespacedName, &gw); err != nil {
+		klog.Error(Format("unable get gateway %s, error %s", req.String(), err.Error()))
 		return reconcile.Result{}, client.IgnoreNotFound(err)
 	}
 
@@ -170,14 +162,12 @@ func (r *ReconcileGateway) Reconcile(ctx context.Context, req reconcile.Request)
 	if err != nil {
 		return reconcile.Result{}, err
 	}
-	err = r.List(ctx, &nodeList, &client.ListOptions{
-		LabelSelector: nodeSelector,
-	})
+	err = r.List(ctx, &nodeList, &client.ListOptions{LabelSelector: nodeSelector})
 	if err != nil {
-		err = fmt.Errorf("unable to list nodes: %s", err)
+		klog.Error(Format("unable to list node error %s", err.Error()))
 		return reconcile.Result{}, err
 	}
-	klog.V(1).Info(Format("list gateway %d node %v", len(nodeList.Items), nodeList.Items))
+
 	// 1. try to elect an active endpoint if possible
 	activeEp := r.electActiveEndpoint(nodeList, &gw)
 	r.recordEndpointEvent(&gw, gw.Status.ActiveEndpoints, activeEp)
@@ -188,17 +178,16 @@ func (r *ReconcileGateway) Reconcile(ctx context.Context, req reconcile.Request)
 	for _, v := range nodeList.Items {
 		podCIDRs, err := r.getPodCIDRs(ctx, v)
 		if err != nil {
-			klog.ErrorS(err, "unable to get podCIDR")
+			klog.Error(Format("unable to get podCIDR for node %s error %s", v.GetName(), err.Error()))
 			return reconcile.Result{}, err
 		}
 		nodes = append(nodes, ravenv1beta1.NodeInfo{
 			NodeName:  v.Name,
-			PrivateIP: utils.GetNodeInternalIP(v),
+			PrivateIP: util.GetNodeInternalIP(v),
 			Subnets:   podCIDRs,
 		})
 	}
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].NodeName < nodes[j].NodeName })
-	klog.V(4).Info(Format("managed node info list, nodes: %v", nodes))
 	gw.Status.Nodes = nodes
 	err = r.Status().Update(ctx, &gw)
 	if err != nil {
@@ -206,8 +195,8 @@ func (r *ReconcileGateway) Reconcile(ctx context.Context, req reconcile.Request)
 			klog.Warning(err, Format("unable to update gateway.status, error %s", err.Error()))
 			return reconcile.Result{Requeue: true, RequeueAfter: 5 * time.Second}, nil
 		}
-		return reconcile.Result{Requeue: true, RequeueAfter: 5 * time.Second},
-			fmt.Errorf("unable to update %s gateway.status, error %s", gw.GetName(), err.Error())
+		klog.Error(Format("unable to update %s gateway.status, error %s", gw.GetName(), err.Error()))
+		return reconcile.Result{Requeue: true, RequeueAfter: 5 * time.Second}, err
 	}
 	return reconcile.Result{}, nil
 }
@@ -251,7 +240,7 @@ func (r *ReconcileGateway) electActiveEndpoint(nodeList corev1.NodeList, gw *rav
 	}
 	klog.V(1).Infof(Format("Ready node has %d, node %v", len(readyNodes), readyNodes))
 	// init a endpoints slice
-	enableProxy, enableTunnel := utils.CheckServer(context.TODO(), r.Client)
+	enableProxy, enableTunnel := util.CheckServer(context.TODO(), r.Client)
 	eps := make([]*ravenv1beta1.Endpoint, 0)
 	if enableProxy {
 		eps = append(eps, electEndpoints(gw, ravenv1beta1.Proxy, readyNodes)...)
@@ -368,16 +357,16 @@ func getActiveEndpointsInfo(eps []*ravenv1beta1.Endpoint) (map[string][]string, 
 }
 
 func (r *ReconcileGateway) configEndpoints(ctx context.Context, gw *ravenv1beta1.Gateway) {
-	enableProxy, enableTunnel := utils.CheckServer(ctx, r.Client)
+	enableProxy, enableTunnel := util.CheckServer(ctx, r.Client)
 	for idx, val := range gw.Status.ActiveEndpoints {
 		if gw.Status.ActiveEndpoints[idx].Config == nil {
 			gw.Status.ActiveEndpoints[idx].Config = make(map[string]string)
 		}
 		switch val.Type {
 		case ravenv1beta1.Proxy:
-			gw.Status.ActiveEndpoints[idx].Config[utils.RavenEnableProxy] = strconv.FormatBool(enableProxy)
+			gw.Status.ActiveEndpoints[idx].Config[util.RavenEnableProxy] = strconv.FormatBool(enableProxy)
 		case ravenv1beta1.Tunnel:
-			gw.Status.ActiveEndpoints[idx].Config[utils.RavenEnableTunnel] = strconv.FormatBool(enableTunnel)
+			gw.Status.ActiveEndpoints[idx].Config[util.RavenEnableTunnel] = strconv.FormatBool(enableTunnel)
 		default:
 		}
 	}
