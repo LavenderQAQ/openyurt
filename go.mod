@@ -5,7 +5,7 @@ go 1.18
 require (
 	github.com/aliyun/alibaba-cloud-sdk-go v1.62.156
 	github.com/davecgh/go-spew v1.1.1
-	github.com/edgexfoundry/go-mod-core-contracts/v2 v2.3.0
+	github.com/edgexfoundry/go-mod-core-contracts/v3 v3.0.0
 	github.com/evanphx/json-patch v5.6.0+incompatible
 	github.com/go-resty/resty/v2 v2.7.0
 	github.com/golang-jwt/jwt v3.2.2+incompatible
@@ -31,7 +31,7 @@ require (
 	go.etcd.io/etcd/client/v3 v3.5.0
 	golang.org/x/net v0.15.0
 	golang.org/x/sys v0.12.0
-	google.golang.org/grpc v1.57.0
+	google.golang.org/grpc v1.57.1
 	gopkg.in/cheggaaa/pb.v1 v1.0.28
 	gopkg.in/square/go-jose.v2 v2.6.0
 	gopkg.in/yaml.v3 v3.0.1

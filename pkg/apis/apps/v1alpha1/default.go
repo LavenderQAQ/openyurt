@@ -17,6 +17,8 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"strings"
+
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	v1 "k8s.io/kubernetes/pkg/apis/core/v1"
@@ -212,7 +214,7 @@ func SetDefaultsYurtStaticSet(obj *YurtStaticSet) {
 	if strategy.Type == "" {
 		strategy.Type = AdvancedRollingUpdateUpgradeStrategyType
 	}
-	if strategy.Type == AdvancedRollingUpdateUpgradeStrategyType && strategy.MaxUnavailable == nil {
+	if strings.EqualFold(string(strategy.Type), string(AdvancedRollingUpdateUpgradeStrategyType)) && strategy.MaxUnavailable == nil {
 		v := intstr.FromString("10%")
 		strategy.MaxUnavailable = &v
 	}
@@ -253,4 +255,10 @@ func SetDefaultsYurtAppDaemon(obj *YurtAppDaemon) {
 	if obj.Spec.WorkloadTemplate.DeploymentTemplate != nil {
 		SetDefaultPodSpec(&obj.Spec.WorkloadTemplate.DeploymentTemplate.Spec.Template.Spec)
 	}
+}
+
+// SetDefaultsNodeBucket set default values for NodeBucket.
+func SetDefaultsNodeBucket(obj *NodeBucket) {
+	// example for set default value for NodeBucket
+
 }

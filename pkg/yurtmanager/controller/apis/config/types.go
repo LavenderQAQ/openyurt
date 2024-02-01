@@ -21,12 +21,17 @@ import (
 	componentbaseconfig "k8s.io/component-base/config"
 	"k8s.io/kube-controller-manager/config/v1alpha1"
 
+	csrapproverconfig "github.com/openyurtio/openyurt/pkg/yurtmanager/controller/csrapprover/config"
+	daemonpodupdaterconfig "github.com/openyurtio/openyurt/pkg/yurtmanager/controller/daemonpodupdater/config"
+	nodebucketconfig "github.com/openyurtio/openyurt/pkg/yurtmanager/controller/nodebucket/config"
 	nodepoolconfig "github.com/openyurtio/openyurt/pkg/yurtmanager/controller/nodepool/config"
 	platformadminconfig "github.com/openyurtio/openyurt/pkg/yurtmanager/controller/platformadmin/config"
 	gatewaypickupconfig "github.com/openyurtio/openyurt/pkg/yurtmanager/controller/raven/gatewaypickup/config"
 	yurtappdaemonconfig "github.com/openyurtio/openyurt/pkg/yurtmanager/controller/yurtappdaemon/config"
 	yurtappoverriderconfig "github.com/openyurtio/openyurt/pkg/yurtmanager/controller/yurtappoverrider/config"
 	yurtappsetconfig "github.com/openyurtio/openyurt/pkg/yurtmanager/controller/yurtappset/config"
+	delegateleaseconfig "github.com/openyurtio/openyurt/pkg/yurtmanager/controller/yurtcoordinator/delegatelease/config"
+	podbindingconfig "github.com/openyurtio/openyurt/pkg/yurtmanager/controller/yurtcoordinator/podbinding/config"
 	yurtstaticsetconfig "github.com/openyurtio/openyurt/pkg/yurtmanager/controller/yurtstaticset/config"
 )
 
@@ -34,6 +39,19 @@ import (
 type YurtManagerConfiguration struct {
 	metav1.TypeMeta
 	Generic GenericConfiguration
+
+	// DelegateLeaseControllerConfiguration holds configuration for DelegateLeaseController related features.
+	DelegateLeaseController delegateleaseconfig.DelegateLeaseControllerConfiguration
+
+	// PodBindingControllerConfiguration holds configuration for PodBindingController related features.
+	PodBindingController podbindingconfig.PodBindingControllerConfiguration
+
+	// DaemonPodUpdaterControllerConfiguration holds configuration for DaemonPodUpdaterController related features.
+	DaemonPodUpdaterController daemonpodupdaterconfig.DaemonPodUpdaterControllerConfiguration
+
+	// CsrApproverControllerConfiguration holds configuration for CsrApproverController related features.
+	CsrApproverController csrapproverconfig.CsrApproverControllerConfiguration
+
 	// NodePoolControllerConfiguration holds configuration for NodePoolController related features.
 	NodePoolController nodepoolconfig.NodePoolControllerConfiguration
 
@@ -56,6 +74,9 @@ type YurtManagerConfiguration struct {
 	YurtAppOverriderController yurtappoverriderconfig.YurtAppOverriderControllerConfiguration
 
 	NodeLifeCycleController v1alpha1.NodeLifecycleControllerConfiguration
+
+	//  NodeBucketController holds configuration for NodeBucketController related features.
+	NodeBucketController nodebucketconfig.NodeBucketControllerConfiguration
 }
 
 type GenericConfiguration struct {

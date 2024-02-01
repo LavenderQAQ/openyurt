@@ -18,7 +18,6 @@ package yurtstaticset
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"strings"
 
@@ -50,14 +49,9 @@ import (
 	"github.com/openyurtio/openyurt/pkg/yurtmanager/controller/yurtstaticset/util"
 )
 
-func init() {
-	flag.IntVar(&concurrentReconciles, "yurtstaticset-workers", concurrentReconciles, "Max concurrent workers for YurtStaticSet controller.")
-}
-
 var (
-	concurrentReconciles = 3
-	controllerResource   = appsv1alpha1.SchemeGroupVersion.WithResource("yurtstaticsets")
-	True                 = true
+	controllerResource = appsv1alpha1.SchemeGroupVersion.WithResource("yurtstaticsets")
+	True               = true
 )
 
 const (
@@ -133,7 +127,7 @@ func Add(ctx context.Context, c *appconfig.CompletedConfig, mgr manager.Manager)
 	}
 
 	klog.Infof("yurtstaticset-controller add controller %s", controllerResource.String())
-	return add(mgr, newReconciler(c, mgr))
+	return add(mgr, c, newReconciler(c, mgr))
 }
 
 var _ reconcile.Reconciler = &ReconcileYurtStaticSet{}
@@ -157,9 +151,9 @@ func newReconciler(c *appconfig.CompletedConfig, mgr manager.Manager) reconcile.
 }
 
 // add adds a new Controller to mgr with r as the reconcile.Reconciler
-func add(mgr manager.Manager, r reconcile.Reconciler) error {
+func add(mgr manager.Manager, cfg *appconfig.CompletedConfig, r reconcile.Reconciler) error {
 	// Create a new controller
-	c, err := controller.New(names.YurtStaticSetController, mgr, controller.Options{Reconciler: r, MaxConcurrentReconciles: concurrentReconciles})
+	c, err := controller.New(names.YurtStaticSetController, mgr, controller.Options{Reconciler: r, MaxConcurrentReconciles: int(cfg.ComponentConfig.YurtStaticSetController.ConcurrentYurtStaticSetWorkers)})
 	if err != nil {
 		return err
 	}
@@ -267,7 +261,7 @@ func nodeTurnReady(evt event.UpdateEvent) bool {
 //+kubebuilder:rbac:groups=apps.openyurt.io,resources=yurtstaticsets/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=apps.openyurt.io,resources=yurtstaticsets/finalizers,verbs=update
 //+kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups=core,resources=pods/status,verbs=update
+//+kubebuilder:rbac:groups=core,resources=pods/status,verbs=update;patch
 //+kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch;update;patch
 //+kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 
@@ -372,10 +366,10 @@ func (r *ReconcileYurtStaticSet) Reconcile(_ context.Context, request reconcile.
 		return r.updateYurtStaticSetStatus(instance, totalNumber, readyNumber, upgradedNumber)
 	}
 
-	switch instance.Spec.UpgradeStrategy.Type {
+	switch strings.ToLower(string(instance.Spec.UpgradeStrategy.Type)) {
 	// AdvancedRollingUpdate Upgrade is to automate the upgrade process for the target static pods on ready nodes
 	// It supports rolling update and the max-unavailable number can be specified by users
-	case appsv1alpha1.AdvancedRollingUpdateUpgradeStrategyType:
+	case strings.ToLower(string(appsv1alpha1.AdvancedRollingUpdateUpgradeStrategyType)):
 		if !allSucceeded {
 			klog.V(5).Infof(Format("Wait last round AdvancedRollingUpdate upgrade to finish of YurtStaticSet %v", request.NamespacedName))
 			return r.updateYurtStaticSetStatus(instance, totalNumber, readyNumber, upgradedNumber)
@@ -389,7 +383,7 @@ func (r *ReconcileYurtStaticSet) Reconcile(_ context.Context, request reconcile.
 
 	// OTA Upgrade can help users control the timing of static pods upgrade
 	// It will set PodNeedUpgrade condition and work with YurtHub component
-	case appsv1alpha1.OTAUpgradeStrategyType:
+	case strings.ToLower(string(appsv1alpha1.OTAUpgradeStrategyType)):
 		if err := r.otaUpgrade(upgradeInfos); err != nil {
 			klog.Errorf(Format("could not OTA upgrade of YurtStaticSet %v, %v", request.NamespacedName, err))
 			return ctrl.Result{}, err

@@ -26,6 +26,10 @@ import (
 // YurtManagerOptions is the main context object for the yurt-manager.
 type YurtManagerOptions struct {
 	Generic                    *GenericOptions
+	DelegateLeaseController    *DelegateLeaseControllerOptions
+	PodBindingController       *PodBindingControllerOptions
+	DaemonPodUpdaterController *DaemonPodUpdaterControllerOptions
+	CsrApproverController      *CsrApproverControllerOptions
 	NodePoolController         *NodePoolControllerOptions
 	GatewayPickupController    *GatewayPickupControllerOptions
 	YurtStaticSetController    *YurtStaticSetControllerOptions
@@ -34,6 +38,7 @@ type YurtManagerOptions struct {
 	PlatformAdminController    *PlatformAdminControllerOptions
 	YurtAppOverriderController *YurtAppOverriderControllerOptions
 	NodeLifeCycleController    *NodeLifecycleControllerOptions
+	NodeBucketController       *NodeBucketControllerOptions
 }
 
 // NewYurtManagerOptions creates a new YurtManagerOptions with a default config.
@@ -41,6 +46,10 @@ func NewYurtManagerOptions() (*YurtManagerOptions, error) {
 
 	s := YurtManagerOptions{
 		Generic:                    NewGenericOptions(),
+		DelegateLeaseController:    NewDelegateLeaseControllerOptions(),
+		PodBindingController:       NewPodBindingControllerOptions(),
+		DaemonPodUpdaterController: NewDaemonPodUpdaterControllerOptions(),
+		CsrApproverController:      NewCsrApproverControllerOptions(),
 		NodePoolController:         NewNodePoolControllerOptions(),
 		GatewayPickupController:    NewGatewayPickupControllerOptions(),
 		YurtStaticSetController:    NewYurtStaticSetControllerOptions(),
@@ -49,6 +58,7 @@ func NewYurtManagerOptions() (*YurtManagerOptions, error) {
 		PlatformAdminController:    NewPlatformAdminControllerOptions(),
 		YurtAppOverriderController: NewYurtAppOverriderControllerOptions(),
 		NodeLifeCycleController:    NewNodeLifecycleControllerOptions(),
+		NodeBucketController:       NewNodeBucketControllerOptions(),
 	}
 
 	return &s, nil
@@ -57,6 +67,10 @@ func NewYurtManagerOptions() (*YurtManagerOptions, error) {
 func (y *YurtManagerOptions) Flags(allControllers, disabledByDefaultControllers []string) cliflag.NamedFlagSets {
 	fss := cliflag.NamedFlagSets{}
 	y.Generic.AddFlags(fss.FlagSet("generic"), allControllers, disabledByDefaultControllers)
+	y.DelegateLeaseController.AddFlags(fss.FlagSet("delegatelease controller"))
+	y.PodBindingController.AddFlags(fss.FlagSet("podbinding controller"))
+	y.DaemonPodUpdaterController.AddFlags(fss.FlagSet("daemonpodupdater controller"))
+	y.CsrApproverController.AddFlags(fss.FlagSet("csrapprover controller"))
 	y.NodePoolController.AddFlags(fss.FlagSet("nodepool controller"))
 	y.GatewayPickupController.AddFlags(fss.FlagSet("gateway controller"))
 	y.YurtStaticSetController.AddFlags(fss.FlagSet("yurtstaticset controller"))
@@ -64,7 +78,7 @@ func (y *YurtManagerOptions) Flags(allControllers, disabledByDefaultControllers 
 	y.PlatformAdminController.AddFlags(fss.FlagSet("iot controller"))
 	y.YurtAppOverriderController.AddFlags(fss.FlagSet("yurtappoverrider controller"))
 	y.NodeLifeCycleController.AddFlags(fss.FlagSet("nodelifecycle controller"))
-
+	y.NodeBucketController.AddFlags(fss.FlagSet("nodebucket controller"))
 	return fss
 }
 
@@ -72,6 +86,10 @@ func (y *YurtManagerOptions) Flags(allControllers, disabledByDefaultControllers 
 func (y *YurtManagerOptions) Validate(allControllers []string, controllerAliases map[string]string) error {
 	var errs []error
 	errs = append(errs, y.Generic.Validate(allControllers, controllerAliases)...)
+	errs = append(errs, y.DelegateLeaseController.Validate()...)
+	errs = append(errs, y.PodBindingController.Validate()...)
+	errs = append(errs, y.DaemonPodUpdaterController.Validate()...)
+	errs = append(errs, y.CsrApproverController.Validate()...)
 	errs = append(errs, y.NodePoolController.Validate()...)
 	errs = append(errs, y.GatewayPickupController.Validate()...)
 	errs = append(errs, y.YurtStaticSetController.Validate()...)
@@ -79,12 +97,25 @@ func (y *YurtManagerOptions) Validate(allControllers []string, controllerAliases
 	errs = append(errs, y.PlatformAdminController.Validate()...)
 	errs = append(errs, y.YurtAppOverriderController.Validate()...)
 	errs = append(errs, y.NodeLifeCycleController.Validate()...)
+	errs = append(errs, y.NodeBucketController.Validate()...)
 	return utilerrors.NewAggregate(errs)
 }
 
 // ApplyTo fills up yurt manager config with options.
 func (y *YurtManagerOptions) ApplyTo(c *config.Config, controllerAliases map[string]string) error {
 	if err := y.Generic.ApplyTo(&c.ComponentConfig.Generic, controllerAliases); err != nil {
+		return err
+	}
+	if err := y.DelegateLeaseController.ApplyTo(&c.ComponentConfig.DelegateLeaseController); err != nil {
+		return err
+	}
+	if err := y.PodBindingController.ApplyTo(&c.ComponentConfig.PodBindingController); err != nil {
+		return err
+	}
+	if err := y.DaemonPodUpdaterController.ApplyTo(&c.ComponentConfig.DaemonPodUpdaterController); err != nil {
+		return err
+	}
+	if err := y.CsrApproverController.ApplyTo(&c.ComponentConfig.CsrApproverController); err != nil {
 		return err
 	}
 	if err := y.NodePoolController.ApplyTo(&c.ComponentConfig.NodePoolController); err != nil {
@@ -106,6 +137,9 @@ func (y *YurtManagerOptions) ApplyTo(c *config.Config, controllerAliases map[str
 		return err
 	}
 	if err := y.NodeLifeCycleController.ApplyTo(&c.ComponentConfig.NodeLifeCycleController); err != nil {
+		return err
+	}
+	if err := y.NodeBucketController.ApplyTo(&c.ComponentConfig.NodeBucketController); err != nil {
 		return err
 	}
 	return nil
