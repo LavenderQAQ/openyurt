@@ -35,9 +35,11 @@ import (
 )
 
 var nonResourceReqPaths = map[string]storage.ClusterInfoType{
-	"/version":                       storage.Version,
-	"/apis/discovery.k8s.io/v1":      storage.APIResourcesInfo,
-	"/apis/discovery.k8s.io/v1beta1": storage.APIResourcesInfo,
+	"/version":                         storage.Version,
+	"/apis/discovery.k8s.io/v1":        storage.APIResourcesInfo,
+	"/apis/discovery.k8s.io/v1beta1":   storage.APIResourcesInfo,
+	"/apis/raven.openyurt.io/v1alpha1": storage.APIResourcesInfo,
+	"/apis/raven.openyurt.io/v1beta1":  storage.APIResourcesInfo,
 }
 
 type NonResourceHandler func(kubeClient *kubernetes.Clientset, sw cachemanager.StorageWrapper, path string) http.Handler
@@ -95,7 +97,7 @@ func nonResourceHandler(kubeClient *kubernetes.Clientset, sw cachemanager.Storag
 		}
 
 		result := kubeClient.RESTClient().Get().AbsPath(path).Do(context.TODO())
-		code := pointer.IntPtr(0)
+		code := pointer.Int(0)
 		result.StatusCode(code)
 		if result.Error() != nil {
 			err := result.Error()

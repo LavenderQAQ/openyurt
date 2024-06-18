@@ -24,7 +24,7 @@ import (
 	"strings"
 	"time"
 
-	"gopkg.in/square/go-jose.v2/jwt"
+	"github.com/go-jose/go-jose/v3/jwt"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metainternalversion "k8s.io/apimachinery/pkg/apis/meta/internalversion"
 	metainternalversionscheme "k8s.io/apimachinery/pkg/apis/meta/internalversion/scheme"
@@ -245,8 +245,12 @@ func WithRequestTrace(handler http.Handler) http.Handler {
 		start := time.Now()
 		defer func() {
 			duration := time.Since(start)
-			klog.Infof("%s with status code %d, spent %v", util.ReqString(req), wrapperRW.statusCode, duration)
-			// 'watch' & 'proxy' requets don't need to be monitored in metrics
+			if info.Resource == "leases" {
+				klog.V(5).Infof("%s with status code %d, spent %v", util.ReqString(req), wrapperRW.statusCode, duration)
+			} else {
+				klog.V(2).Infof("%s with status code %d, spent %v", util.ReqString(req), wrapperRW.statusCode, duration)
+			}
+			// 'watch' & 'proxy' requests don't need to be monitored in metrics
 			if info.Verb != "proxy" && info.Verb != "watch" {
 				metrics.Metrics.SetProxyLatencyCollector(client, info.Verb, info.Resource, info.Subresource, metrics.Apiserver_latency, int64(duration))
 			}
@@ -284,9 +288,17 @@ func WithMaxInFlightLimit(handler http.Handler, limit int) http.Handler {
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		info, ok := apirequest.RequestInfoFrom(req.Context())
+		if !ok {
+			info = &apirequest.RequestInfo{}
+		}
 		select {
 		case reqChan <- true:
-			klog.V(2).Infof("%s, in flight requests: %d", util.ReqString(req), len(reqChan))
+			if info.Resource == "leases" {
+				klog.V(5).Infof("%s, in flight requests: %d", util.ReqString(req), len(reqChan))
+			} else {
+				klog.V(2).Infof("%s, in flight requests: %d", util.ReqString(req), len(reqChan))
+			}
 			defer func() {
 				<-reqChan
 				klog.V(5).Infof("%s request completed, left %d requests in flight", util.ReqString(req), len(reqChan))
@@ -331,7 +343,7 @@ func WithRequestTimeout(handler http.Handler) http.Handler {
 					}
 				} else if info.Verb == "get" {
 					query := req.URL.Query()
-					if str, _ := query["timeout"]; len(str) > 0 {
+					if str := query["timeout"]; len(str) > 0 {
 						if t, err := time.ParseDuration(str[0]); err == nil {
 							if t > time.Duration(getAndListTimeoutReduce)*time.Second {
 								timeout = t - time.Duration(getAndListTimeoutReduce)*time.Second
@@ -415,6 +427,18 @@ func IsKubeletLeaseReq(req *http.Request) bool {
 	return true
 }
 
+// IsKubeletGetNodeReq judge whether the request is a get node request from kubelet
+func IsKubeletGetNodeReq(req *http.Request) bool {
+	ctx := req.Context()
+	if comp, ok := util.ClientComponentFrom(ctx); !ok || comp != "kubelet" {
+		return false
+	}
+	if info, ok := apirequest.RequestInfoFrom(ctx); !ok || info.Resource != "nodes" || info.Verb != "get" {
+		return false
+	}
+	return true
+}
+
 // WriteObject write object to response writer
 func WriteObject(statusCode int, obj runtime.Object, w http.ResponseWriter, req *http.Request) error {
 	ctx := req.Context()
@@ -424,7 +448,7 @@ func WriteObject(statusCode int, obj runtime.Object, w http.ResponseWriter, req 
 			Version: info.APIVersion,
 		}
 		negotiatedSerializer := serializer.YurtHubSerializer.GetNegotiatedSerializer(gv.WithResource(info.Resource))
-		responsewriters.WriteObjectNegotiated(negotiatedSerializer, negotiation.DefaultEndpointRestrictions, gv, w, req, statusCode, obj)
+		responsewriters.WriteObjectNegotiated(negotiatedSerializer, negotiation.DefaultEndpointRestrictions, gv, w, req, statusCode, obj, false)
 		return nil
 	}
 
@@ -503,10 +527,6 @@ func ReListWatchReq(rw http.ResponseWriter, req *http.Request) {
 	}
 
 	streamingEncoder := streaming.NewEncoder(framer.NewFrameWriter(rw), streamingSerializer)
-	if err != nil {
-		klog.Errorf("ReListWatchReq %s failed with error = %s", util.ReqString(req), err.Error())
-		return
-	}
 
 	outEvent := &metav1.WatchEvent{
 		Type: string(watch.Error),

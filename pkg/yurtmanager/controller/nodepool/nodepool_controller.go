@@ -21,7 +21,6 @@ import (
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -32,6 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
+	yurtClient "github.com/openyurtio/openyurt/cmd/yurt-manager/app/client"
 	"github.com/openyurtio/openyurt/cmd/yurt-manager/app/config"
 	"github.com/openyurtio/openyurt/cmd/yurt-manager/names"
 	appsv1beta1 "github.com/openyurtio/openyurt/pkg/apis/apps/v1beta1"
@@ -40,8 +40,7 @@ import (
 )
 
 var (
-	concurrentReconciles = 3
-	controllerResource   = appsv1beta1.SchemeGroupVersion.WithResource("nodepools")
+	controllerResource = appsv1beta1.SchemeGroupVersion.WithResource("nodepools")
 )
 
 func Format(format string, args ...interface{}) string {
@@ -52,19 +51,8 @@ func Format(format string, args ...interface{}) string {
 // ReconcileNodePool reconciles a NodePool object
 type ReconcileNodePool struct {
 	client.Client
-	mapper   meta.RESTMapper
 	recorder record.EventRecorder
 	cfg      poolconfig.NodePoolControllerConfiguration
-}
-
-func (r *ReconcileNodePool) InjectClient(c client.Client) error {
-	r.Client = c
-	return nil
-}
-
-func (r *ReconcileNodePool) InjectMapper(mapper meta.RESTMapper) error {
-	r.mapper = mapper
-	return nil
 }
 
 var _ reconcile.Reconciler = &ReconcileNodePool{}
@@ -76,29 +64,30 @@ func Add(ctx context.Context, c *config.CompletedConfig, mgr manager.Manager) er
 	r := &ReconcileNodePool{
 		cfg:      c.ComponentConfig.NodePoolController,
 		recorder: mgr.GetEventRecorderFor(names.NodePoolController),
+		Client:   yurtClient.GetClientByControllerNameOrDie(mgr, names.NodePoolController),
 	}
 
 	// Create a new controller
 	ctrl, err := controller.New(names.NodePoolController, mgr, controller.Options{
-		Reconciler: r, MaxConcurrentReconciles: concurrentReconciles,
+		Reconciler: r, MaxConcurrentReconciles: int(c.ComponentConfig.NodePoolController.ConcurrentNodePoolWorkers),
 	})
 	if err != nil {
 		return err
 	}
 
-	if _, err := r.mapper.KindFor(controllerResource); err != nil {
+	if _, err := mgr.GetRESTMapper().KindFor(controllerResource); err != nil {
 		klog.Infof("resource %s doesn't exist", controllerResource.String())
 		return err
 	}
 
 	// Watch for changes to NodePool
-	err = ctrl.Watch(&source.Kind{Type: &appsv1beta1.NodePool{}}, &handler.EnqueueRequestForObject{})
+	err = ctrl.Watch(source.Kind(mgr.GetCache(), &appsv1beta1.NodePool{}), &handler.EnqueueRequestForObject{})
 	if err != nil {
 		return err
 	}
 
 	// Watch for changes to Node
-	err = ctrl.Watch(&source.Kind{Type: &corev1.Node{}}, &EnqueueNodePoolForNode{
+	err = ctrl.Watch(source.Kind(mgr.GetCache(), &corev1.Node{}), &EnqueueNodePoolForNode{
 		EnableSyncNodePoolConfigurations: r.cfg.EnableSyncNodePoolConfigurations,
 		Recorder:                         r.recorder,
 	})
@@ -116,9 +105,9 @@ type NodePoolRelatedAttributes struct {
 	Taints      []corev1.Taint    `json:"taints,omitempty"`
 }
 
-// +kubebuilder:rbac:groups=apps.openyurt.io,resources=nodepools,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=apps.openyurt.io,resources=nodepools,verbs=get;update;patch
 // +kubebuilder:rbac:groups=apps.openyurt.io,resources=nodepools/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=core,resources=nodes,verbs=get;update;patch
 
 // Reconcile reads that state of the cluster for a NodePool object and makes changes based on the state read
 // and what is in the NodePool.Spec

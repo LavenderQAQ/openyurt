@@ -20,9 +20,10 @@ import (
 	v1 "k8s.io/api/core/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
+	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	"github.com/openyurtio/openyurt/pkg/yurtmanager/webhook/builder"
+	yurtClient "github.com/openyurtio/openyurt/cmd/yurt-manager/app/client"
+	"github.com/openyurtio/openyurt/cmd/yurt-manager/names"
 	"github.com/openyurtio/openyurt/pkg/yurtmanager/webhook/util"
 )
 
@@ -33,19 +34,9 @@ const (
 // SetupWebhookWithManager sets up Cluster webhooks. mutate path, validate path, error
 func (webhook *NodeHandler) SetupWebhookWithManager(mgr ctrl.Manager) (string, string, error) {
 	// init
-	webhook.Client = mgr.GetClient()
+	webhook.Client = yurtClient.GetClientByControllerNameOrDie(mgr, names.NodePoolController)
 
-	gvk, err := apiutil.GVKForObject(&v1.Node{}, mgr.GetScheme())
-	if err != nil {
-		return "", "", err
-	}
-	return util.GenerateMutatePath(gvk),
-		util.GenerateValidatePath(gvk),
-		builder.WebhookManagedBy(mgr).
-			For(&v1.Node{}).
-			WithDefaulter(webhook).
-			WithValidator(webhook).
-			Complete()
+	return util.RegisterWebhook(mgr, &v1.Node{}, webhook)
 }
 
 // +kubebuilder:webhook:path=/validate-core-openyurt-io-v1-node,mutating=false,failurePolicy=ignore,sideEffects=None,admissionReviewVersions=v1,groups="",resources=nodes,verbs=update,versions=v1,name=validate.core.v1.node.openyurt.io
@@ -56,5 +47,5 @@ type NodeHandler struct {
 	Client client.Client
 }
 
-var _ builder.CustomDefaulter = &NodeHandler{}
-var _ builder.CustomValidator = &NodeHandler{}
+var _ webhook.CustomDefaulter = &NodeHandler{}
+var _ webhook.CustomValidator = &NodeHandler{}

@@ -23,7 +23,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -38,7 +37,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/watch"
-	"k8s.io/apiserver/pkg/endpoints/handlers"
 	apirequest "k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -52,6 +50,12 @@ import (
 
 var (
 	ErrInMemoryCacheMiss = errors.New("in-memory cache miss")
+	ErrNotNodeOrLease    = errors.New("resource is not node or lease")
+
+	nonCacheableResources = map[string]struct{}{
+		"certificatesigningrequests": {},
+		"subjectaccessreviews":       {},
+	}
 )
 
 // CacheManager is an adaptor to cache runtime object data into backend storage
@@ -174,10 +178,6 @@ func (cm *cacheManager) queryListObject(req *http.Request) (runtime.Object, erro
 		klog.Errorf("could not create ListObj for gvk %s for req: %s, %v", listGvk.String(), util.ReqString(req), err)
 		return nil, err
 	}
-	if err := setListObjSelfLink(listObj, req); err != nil {
-		klog.Errorf("could not set selfLink for ListObj of gvk %s for req: %s, %v", listGvk.String(), util.ReqString(req), err)
-		return nil, err
-	}
 
 	objs, err := cm.storage.List(key)
 	if err == storage.ErrStorageNotFound && isListRequestWithNameFieldSelector(req) {
@@ -228,20 +228,19 @@ func (cm *cacheManager) queryOneObject(req *http.Request) (runtime.Object, error
 
 	comp, _ := util.ClientComponentFrom(ctx)
 	// query in-memory cache first
-	var isInMemoryCache = isInMemoryCache(ctx)
 	var isInMemoryCacheMiss bool
-	if isInMemoryCache {
-		if obj, err := cm.queryInMemeryCache(info); err != nil {
-			if err == ErrInMemoryCacheMiss {
-				isInMemoryCacheMiss = true
-				klog.V(4).Infof("in-memory cache miss when handling request %s, fall back to storage query", util.ReqString(req))
-			} else {
-				klog.Errorf("cannot query in-memory cache for reqInfo %s, %v,", util.ReqInfoString(info), err)
-			}
+	if obj, err := cm.queryInMemeryCache(ctx, info); err != nil {
+		if err == ErrInMemoryCacheMiss {
+			isInMemoryCacheMiss = true
+			klog.V(4).Infof("in-memory cache miss when handling request %s, fall back to storage query", util.ReqString(req))
+		} else if err == ErrNotNodeOrLease {
+			klog.V(4).Infof("resource(%s) is not node or lease, it will be found in the disk not cache", info.Resource)
 		} else {
-			klog.V(4).Infof("in-memory cache hit when handling request %s", util.ReqString(req))
-			return obj, nil
+			klog.Errorf("cannot query in-memory cache for reqInfo %s, %v,", util.ReqInfoString(info), err)
 		}
+	} else {
+		klog.V(4).Infof("in-memory cache hit when handling request %s", util.ReqString(req))
+		return obj, nil
 	}
 
 	// fall back to normal query
@@ -270,12 +269,7 @@ func (cm *cacheManager) queryOneObject(req *http.Request) (runtime.Object, error
 	// While cloud-edge network is broken, the inMemoryCache can only be full filled with data from edge cache,
 	// such as local disk and yurt-coordinator.
 	if isInMemoryCacheMiss {
-		if inMemoryCacheKey, err := inMemoryCacheKeyFunc(info); err != nil {
-			klog.Errorf("cannot in-memory cache key for req %s, %v", util.ReqString(req), err)
-		} else {
-			cm.inMemoryCacheFor(inMemoryCacheKey, obj)
-			klog.V(4).Infof("use obj from backend storage to update in-memory cache of key %s", inMemoryCacheKey)
-		}
+		return obj, cm.updateInMemoryCache(ctx, info, obj)
 	}
 	return obj, nil
 }
@@ -333,33 +327,6 @@ func generateEmptyListObjOfGVK(listGvk schema.GroupVersionKind) (runtime.Object,
 	}
 
 	return listObj, nil
-}
-
-func setListObjSelfLink(listObj runtime.Object, req *http.Request) error {
-	ctx := req.Context()
-	info, _ := apirequest.RequestInfoFrom(ctx)
-	clusterScoped := true
-	if info.Namespace != "" {
-		clusterScoped = false
-	}
-
-	prefix := "/" + path.Join(info.APIGroup, info.APIVersion)
-	namer := handlers.ContextBasedNaming{
-		SelfLinker:         runtime.SelfLinker(meta.NewAccessor()),
-		SelfLinkPathPrefix: path.Join(prefix, info.Resource) + "/",
-		SelfLinkPathSuffix: "",
-		ClusterScoped:      clusterScoped,
-	}
-
-	uri, err := namer.GenerateListLink(req)
-	if err != nil {
-		return err
-	}
-	if err := namer.SetSelfLink(listObj, uri); err != nil {
-		klog.Infof("Unable to set self link on object: %v", err)
-	}
-
-	return nil
 }
 
 func (cm *cacheManager) saveWatchObject(ctx context.Context, info *apirequest.RequestInfo, r io.ReadCloser, stopCh <-chan struct{}) error {
@@ -428,9 +395,15 @@ func (cm *cacheManager) saveWatchObject(ctx context.Context, info *apirequest.Re
 				} else {
 					updateObjCnt++
 				}
+				errMsg := cm.updateInMemoryCache(ctx, info, obj)
+				if errMsg != nil {
+					klog.Errorf("failed to update cache, %v", errMsg)
+				}
 			case watch.Deleted:
 				err = cm.storage.Delete(key)
 				delObjCnt++
+				// for now, If it's a delete request, no need to modify the inmemory cache,
+				// because currently, there shouldn't be any delete requests for nodes or leases.
 			default:
 				// impossible go to here
 			}
@@ -444,7 +417,7 @@ func (cm *cacheManager) saveWatchObject(ctx context.Context, info *apirequest.Re
 			}
 		case watch.Bookmark:
 			rv, _ := accessor.ResourceVersion(obj)
-			klog.Infof("get bookmark with rv %s for %s watch %s", rv, comp, info.Resource)
+			klog.V(4).Infof("get bookmark with rv %s for %s watch %s", rv, comp, info.Resource)
 		case watch.Error:
 			klog.Infof("unable to understand watch event %#v", obj)
 		}
@@ -601,6 +574,10 @@ func (cm *cacheManager) saveOneObject(ctx context.Context, info *apirequest.Requ
 		return err
 	}
 
+	return cm.updateInMemoryCache(ctx, info, obj)
+}
+
+func (cm *cacheManager) updateInMemoryCache(ctx context.Context, info *apirequest.RequestInfo, obj runtime.Object) error {
 	// update the in-memory cache with cloud response
 	if !isInMemoryCache(ctx) {
 		return nil
@@ -705,7 +682,7 @@ func isCreate(ctx context.Context) bool {
 // 1. component is not set
 // 2. delete/deletecollection/proxy request
 // 3. sub-resource request but is not status
-// 4. csr resource request
+// 4. csr and sar resource request
 func (cm *cacheManager) CanCacheFor(req *http.Request) bool {
 	ctx := req.Context()
 
@@ -740,6 +717,10 @@ func (cm *cacheManager) CanCacheFor(req *http.Request) bool {
 	}
 
 	if info.Subresource != "" && info.Subresource != "status" {
+		return false
+	}
+
+	if _, ok := nonCacheableResources[info.Resource]; ok {
 		return false
 	}
 
@@ -794,7 +775,11 @@ func (cm *cacheManager) DeleteKindFor(gvr schema.GroupVersionResource) error {
 	return cm.restMapperManager.DeleteKindFor(gvr)
 }
 
-func (cm *cacheManager) queryInMemeryCache(reqInfo *apirequest.RequestInfo) (runtime.Object, error) {
+func (cm *cacheManager) queryInMemeryCache(ctx context.Context, reqInfo *apirequest.RequestInfo) (runtime.Object, error) {
+	if !isInMemoryCache(ctx) {
+		return nil, ErrNotNodeOrLease
+	}
+
 	key, err := inMemoryCacheKeyFunc(reqInfo)
 	if err != nil {
 		return nil, err

@@ -45,58 +45,52 @@ func TestFindResponseFilter(t *testing.T) {
 	apis.AddToScheme(scheme)
 	fakeDynamicClient := dynamicfake.NewSimpleDynamicClient(scheme)
 	serializerManager := serializer.NewSerializerManager()
-	apiserverAddr := "127.0.0.1:6443"
 
 	testcases := map[string]struct {
 		enableResourceFilter    bool
 		workingMode             string
 		disabledResourceFilters []string
-		accessServerThroughHub  bool
 		enableDummyIf           bool
 		userAgent               string
 		verb                    string
 		path                    string
 		mgrIsNil                bool
 		isFound                 bool
-		names                   sets.String
+		names                   sets.Set[string]
 	}{
 		"disable resource filter": {
 			enableResourceFilter: false,
 			mgrIsNil:             true,
 		},
 		"get master service filter": {
-			enableResourceFilter:   true,
-			accessServerThroughHub: true,
-			enableDummyIf:          true,
-			userAgent:              "kubelet",
-			verb:                   "GET",
-			path:                   "/api/v1/services",
-			isFound:                true,
-			names:                  sets.NewString("masterservice"),
+			enableResourceFilter: true,
+			enableDummyIf:        true,
+			userAgent:            "kubelet",
+			verb:                 "GET",
+			path:                 "/api/v1/services",
+			isFound:              true,
+			names:                sets.New("masterservice"),
 		},
 		"get discard cloud service and node port isolation filter": {
-			enableResourceFilter:   true,
-			accessServerThroughHub: true,
-			enableDummyIf:          true,
-			userAgent:              "kube-proxy",
-			verb:                   "GET",
-			path:                   "/api/v1/services",
-			isFound:                true,
-			names:                  sets.NewString("discardcloudservice", "nodeportisolation"),
+			enableResourceFilter: true,
+			enableDummyIf:        true,
+			userAgent:            "kube-proxy",
+			verb:                 "GET",
+			path:                 "/api/v1/services",
+			isFound:              true,
+			names:                sets.New("discardcloudservice", "nodeportisolation"),
 		},
 		"get service topology filter": {
-			enableResourceFilter:   true,
-			accessServerThroughHub: true,
-			enableDummyIf:          false,
-			userAgent:              "kube-proxy",
-			verb:                   "GET",
-			path:                   "/api/v1/endpoints",
-			isFound:                true,
-			names:                  sets.NewString("servicetopology"),
+			enableResourceFilter: true,
+			enableDummyIf:        false,
+			userAgent:            "kube-proxy",
+			verb:                 "GET",
+			path:                 "/api/v1/endpoints",
+			isFound:              true,
+			names:                sets.New("servicetopology"),
 		},
 		"disable service topology filter": {
 			enableResourceFilter:    true,
-			accessServerThroughHub:  true,
 			disabledResourceFilters: []string{"servicetopology"},
 			enableDummyIf:           true,
 			userAgent:               "kube-proxy",
@@ -105,32 +99,13 @@ func TestFindResponseFilter(t *testing.T) {
 			isFound:                 false,
 		},
 		"can't get discard cloud service filter in cloud mode": {
-			enableResourceFilter:   true,
-			accessServerThroughHub: false,
-			workingMode:            "cloud",
-			userAgent:              "kube-proxy",
-			verb:                   "GET",
-			path:                   "/api/v1/services",
-			isFound:                true,
-			names:                  sets.NewString("nodeportisolation"),
-		},
-		"get hostnetwork propagation filter": {
-			enableResourceFilter:   true,
-			accessServerThroughHub: true,
-			userAgent:              "kubelet",
-			verb:                   "GET",
-			path:                   "/api/v1/pods",
-			isFound:                true,
-			names:                  sets.NewString("hostnetworkpropagation"),
-		},
-		"could not get hostnetwork propagation filter in cloud mode": {
-			enableResourceFilter:   true,
-			accessServerThroughHub: true,
-			workingMode:            "cloud",
-			userAgent:              "kubelet",
-			verb:                   "GET",
-			path:                   "/api/v1/pods",
-			isFound:                false,
+			enableResourceFilter: true,
+			workingMode:          "cloud",
+			userAgent:            "kube-proxy",
+			verb:                 "GET",
+			path:                 "/api/v1/services",
+			isFound:              true,
+			names:                sets.New("nodeportisolation"),
 		},
 	}
 
@@ -141,7 +116,6 @@ func TestFindResponseFilter(t *testing.T) {
 				EnableResourceFilter:    tt.enableResourceFilter,
 				WorkingMode:             tt.workingMode,
 				DisabledResourceFilters: make([]string, 0),
-				AccessServerThroughHub:  tt.accessServerThroughHub,
 				EnableDummyIf:           tt.enableDummyIf,
 				NodeName:                "test",
 				YurtHubProxySecurePort:  10268,
@@ -156,7 +130,7 @@ func TestFindResponseFilter(t *testing.T) {
 			stopper := make(chan struct{})
 			defer close(stopper)
 
-			mgr, _ := NewFilterManager(options, sharedFactory, nodePoolFactory, fakeClient, serializerManager, apiserverAddr)
+			mgr, _ := NewFilterManager(options, sharedFactory, nodePoolFactory, fakeClient, serializerManager)
 			if tt.mgrIsNil && mgr == nil {
 				return
 			}
@@ -189,8 +163,8 @@ func TestFindResponseFilter(t *testing.T) {
 			}
 
 			names := strings.Split(responseFilter.Name(), ",")
-			if !tt.names.Equal(sets.NewString(names...)) {
-				t.Errorf("expect filter names %v, but got %v", tt.names.List(), names)
+			if !tt.names.Equal(sets.New(names...)) {
+				t.Errorf("expect filter names %v, but got %v", sets.List(tt.names), names)
 			}
 		})
 	}

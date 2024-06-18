@@ -33,23 +33,23 @@ import (
 
 	"github.com/openyurtio/openyurt/pkg/projectinfo"
 	"github.com/openyurtio/openyurt/pkg/yurthub/filter"
+	"github.com/openyurtio/openyurt/pkg/yurthub/filter/base"
 )
 
 const (
+	// FilterName filter is used to reassemble endpointslice in order to make the service traffic
+	// under the topology that defined by service.Annotation["openyurt.io/topologyKeys"]
+	FilterName = "servicetopology"
+
 	AnnotationServiceTopologyKey           = "openyurt.io/topologyKeys"
 	AnnotationServiceTopologyValueNode     = "kubernetes.io/hostname"
 	AnnotationServiceTopologyValueZone     = "kubernetes.io/zone"
 	AnnotationServiceTopologyValueNodePool = "openyurt.io/nodepool"
-	LabelNodePoolName                      = "openyurt.io/pool-name"
-)
-
-var (
-	poolTopologyValueSets = sets.NewString(AnnotationServiceTopologyValueZone, AnnotationServiceTopologyValueNodePool)
 )
 
 // Register registers a filter
-func Register(filters *filter.Filters) {
-	filters.Register(filter.ServiceTopologyFilterName, func() (filter.ObjectFilter, error) {
+func Register(filters *base.Filters) {
+	filters.Register(FilterName, func() (filter.ObjectFilter, error) {
 		return NewServiceTopologyFilter()
 	})
 }
@@ -70,13 +70,13 @@ type serviceTopologyFilter struct {
 }
 
 func (stf *serviceTopologyFilter) Name() string {
-	return filter.ServiceTopologyFilterName
+	return FilterName
 }
 
-func (stf *serviceTopologyFilter) SupportedResourceAndVerbs() map[string]sets.String {
-	return map[string]sets.String{
-		"endpoints":      sets.NewString("list", "watch"),
-		"endpointslices": sets.NewString("list", "watch"),
+func (stf *serviceTopologyFilter) SupportedResourceAndVerbs() map[string]sets.Set[string] {
+	return map[string]sets.Set[string]{
+		"endpoints":      sets.New("list", "watch"),
+		"endpointslices": sets.New("list", "watch"),
 	}
 }
 
@@ -130,31 +130,6 @@ func (stf *serviceTopologyFilter) Filter(obj runtime.Object, stopCh <-chan struc
 	}
 
 	switch v := obj.(type) {
-	case *discoveryV1beta1.EndpointSliceList:
-		// filter endpointSlice before k8s 1.21
-		var items []discoveryV1beta1.EndpointSlice
-		for i := range v.Items {
-			eps := stf.serviceTopologyHandler(&v.Items[i]).(*discoveryV1beta1.EndpointSlice)
-			items = append(items, *eps)
-		}
-		v.Items = items
-		return v
-	case *discovery.EndpointSliceList:
-		var items []discovery.EndpointSlice
-		for i := range v.Items {
-			eps := stf.serviceTopologyHandler(&v.Items[i]).(*discovery.EndpointSlice)
-			items = append(items, *eps)
-		}
-		v.Items = items
-		return v
-	case *v1.EndpointsList:
-		var items []v1.Endpoints
-		for i := range v.Items {
-			ep := stf.serviceTopologyHandler(&v.Items[i]).(*v1.Endpoints)
-			items = append(items, *ep)
-		}
-		v.Items = items
-		return v
 	case *v1.Endpoints, *discoveryV1beta1.EndpointSlice, *discovery.EndpointSlice:
 		return stf.serviceTopologyHandler(v)
 	default:
@@ -174,7 +149,10 @@ func (stf *serviceTopologyFilter) serviceTopologyHandler(obj runtime.Object) run
 		return stf.nodeTopologyHandler(obj)
 	case AnnotationServiceTopologyValueNodePool, AnnotationServiceTopologyValueZone:
 		// close traffic on the same node pool
-		return stf.nodePoolTopologyHandler(obj)
+		if stf.enablePoolTopology {
+			return stf.nodePoolTopologyHandler(obj)
+		}
+		return obj
 	default:
 		return obj
 	}
@@ -202,13 +180,8 @@ func (stf *serviceTopologyFilter) resolveServiceTopologyType(obj runtime.Object)
 		return ""
 	}
 
-	// node topology for service
-	if svc.Annotations[AnnotationServiceTopologyKey] == AnnotationServiceTopologyValueNode {
-		return AnnotationServiceTopologyValueNode
-	} else if poolTopologyValueSets.Has(svc.Annotations[AnnotationServiceTopologyKey]) {
-		if stf.enablePoolTopology {
-			return svc.Annotations[AnnotationServiceTopologyKey]
-		}
+	if svc.Annotations != nil {
+		return svc.Annotations[AnnotationServiceTopologyKey]
 	}
 	return ""
 }

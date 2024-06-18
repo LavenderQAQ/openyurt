@@ -39,6 +39,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
+	yurtClient "github.com/openyurtio/openyurt/cmd/yurt-manager/app/client"
 	appconfig "github.com/openyurtio/openyurt/cmd/yurt-manager/app/config"
 	"github.com/openyurtio/openyurt/cmd/yurt-manager/names"
 	calicov3 "github.com/openyurtio/openyurt/pkg/apis/calico/v3"
@@ -88,7 +89,7 @@ type ReconcileGateway struct {
 // newReconciler returns a new reconcile.Reconciler
 func newReconciler(c *appconfig.CompletedConfig, mgr manager.Manager) reconcile.Reconciler {
 	return &ReconcileGateway{
-		Client:       mgr.GetClient(),
+		Client:       yurtClient.GetClientByControllerNameOrDie(mgr, names.GatewayPickupController),
 		scheme:       mgr.GetScheme(),
 		recorder:     mgr.GetEventRecorderFor(names.GatewayPickupController),
 		Configration: c.ComponentConfig.GatewayPickupController,
@@ -106,18 +107,18 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 	}
 
 	// Watch for changes to Gateway
-	err = c.Watch(&source.Kind{Type: &ravenv1beta1.Gateway{}}, &handler.EnqueueRequestForObject{})
+	err = c.Watch(source.Kind(mgr.GetCache(), &ravenv1beta1.Gateway{}), &handler.EnqueueRequestForObject{})
 	if err != nil {
 		return err
 	}
 
 	// Watch for changes to Nodes
-	err = c.Watch(&source.Kind{Type: &corev1.Node{}}, &EnqueueGatewayForNode{})
+	err = c.Watch(source.Kind(mgr.GetCache(), &corev1.Node{}), &EnqueueGatewayForNode{})
 	if err != nil {
 		return err
 	}
 
-	err = c.Watch(&source.Kind{Type: &corev1.ConfigMap{}}, &EnqueueGatewayForRavenConfig{client: mgr.GetClient()}, predicate.NewPredicateFuncs(
+	err = c.Watch(source.Kind(mgr.GetCache(), &corev1.ConfigMap{}), &EnqueueGatewayForRavenConfig{client: yurtClient.GetClientByControllerNameOrDie(mgr, names.GatewayPickupController)}, predicate.NewPredicateFuncs(
 		func(object client.Object) bool {
 			cm, ok := object.(*corev1.ConfigMap)
 			if !ok {
@@ -137,14 +138,12 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 	return nil
 }
 
-//+kubebuilder:rbac:groups=raven.openyurt.io,resources=gateways,verbs=get;list;watch;create;delete;update
+//+kubebuilder:rbac:groups=raven.openyurt.io,resources=gateways,verbs=get;create;delete;update
 //+kubebuilder:rbac:groups=raven.openyurt.io,resources=gateways/status,verbs=get;update;patch
-//+kubebuilder:rbac:groups=core,resources=events,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=raven.openyurt.io,resources=gateways/finalizers,verbs=update
-//+kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch;update;patch
-//+kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups=core,resources=endpoints,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups=crd.projectcalico.org,resources=blockaffinities,verbs=get;list;watch
+//+kubebuilder:rbac:groups=core,resources=nodes,verbs=get
+//+kubebuilder:rbac:groups=core,resources=configmaps,verbs=get
+//+kubebuilder:rbac:groups=crd.projectcalico.org,resources=blockaffinities,verbs=get
 
 // Reconcile reads that state of the cluster for a Gateway object and makes changes based on the state read
 // and what is in the Gateway.Spec
@@ -189,6 +188,7 @@ func (r *ReconcileGateway) Reconcile(ctx context.Context, req reconcile.Request)
 	}
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].NodeName < nodes[j].NodeName })
 	gw.Status.Nodes = nodes
+	r.addExtraAllowedSubnet(&gw)
 	err = r.Status().Update(ctx, &gw)
 	if err != nil {
 		if apierrs.IsConflict(err) {
@@ -371,4 +371,24 @@ func (r *ReconcileGateway) configEndpoints(ctx context.Context, gw *ravenv1beta1
 		}
 	}
 	return
+}
+
+func (r *ReconcileGateway) addExtraAllowedSubnet(gw *ravenv1beta1.Gateway) {
+	if gw.Annotations == nil || gw.Annotations[util.ExtraAllowedSourceCIDRs] == "" {
+		return
+	}
+	subnets := strings.Split(gw.Annotations[util.ExtraAllowedSourceCIDRs], ",")
+	var gatewayName string
+	for _, aep := range gw.Status.ActiveEndpoints {
+		if aep.Type == ravenv1beta1.Tunnel {
+			gatewayName = aep.NodeName
+			break
+		}
+	}
+	for idx, node := range gw.Status.Nodes {
+		if node.NodeName == gatewayName {
+			gw.Status.Nodes[idx].Subnets = append(gw.Status.Nodes[idx].Subnets, subnets...)
+			break
+		}
+	}
 }

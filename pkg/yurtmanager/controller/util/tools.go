@@ -23,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/utils/integer"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -62,8 +63,13 @@ func SlowStartBatch(count int, initialBatchSize int, fn func(index int) error) (
 		wg.Wait()
 		curSuccesses := batchSize - len(errCh)
 		successes += curSuccesses
+		close(errCh)
 		if len(errCh) > 0 {
-			return successes, <-errCh
+			errs := make([]error, 0)
+			for err := range errCh {
+				errs = append(errs, err)
+			}
+			return successes, utilerrors.NewAggregate(errs)
 		}
 		remaining -= batchSize
 	}
@@ -75,10 +81,6 @@ func NewNoReconcileController(name string, mgr manager.Manager, options controll
 		return nil, fmt.Errorf("must specify Name for Controller")
 	}
 
-	if options.Log == nil {
-		options.Log = mgr.GetLogger()
-	}
-
 	if options.CacheSyncTimeout == 0 {
 		options.CacheSyncTimeout = 2 * time.Minute
 	}
@@ -87,18 +89,12 @@ func NewNoReconcileController(name string, mgr manager.Manager, options controll
 		options.RateLimiter = workqueue.DefaultControllerRateLimiter()
 	}
 
-	// Inject dependencies into Reconciler
-	if err := mgr.SetFields(options.Reconciler); err != nil {
-		return nil, err
-	}
-
 	// Create controller with dependencies set
 	c := &controllerimpl.Controller{
 		MakeQueue: func() workqueue.RateLimitingInterface {
 			return workqueue.NewNamedRateLimitingQueue(options.RateLimiter, name)
 		},
 		CacheSyncTimeout: options.CacheSyncTimeout,
-		SetFields:        mgr.SetFields,
 		Name:             name,
 		RecoverPanic:     options.RecoverPanic,
 	}

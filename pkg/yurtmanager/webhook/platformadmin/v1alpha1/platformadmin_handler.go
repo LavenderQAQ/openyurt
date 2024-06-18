@@ -21,9 +21,10 @@ import (
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
+	yurtClient "github.com/openyurtio/openyurt/cmd/yurt-manager/app/client"
+	"github.com/openyurtio/openyurt/cmd/yurt-manager/names"
 	"github.com/openyurtio/openyurt/pkg/apis/iot/v1alpha1"
 	"github.com/openyurtio/openyurt/pkg/yurtmanager/controller/platformadmin/config"
 	webhookutil "github.com/openyurtio/openyurt/pkg/yurtmanager/webhook/util"
@@ -32,24 +33,12 @@ import (
 // SetupWebhookWithManager sets up Cluster webhooks.
 func (webhook *PlatformAdminHandler) SetupWebhookWithManager(mgr ctrl.Manager) (string, string, error) {
 	// init
-	webhook.Client = mgr.GetClient()
-
-	gvk, err := apiutil.GVKForObject(&v1alpha1.PlatformAdmin{}, mgr.GetScheme())
-	if err != nil {
-		return "", "", err
-	}
+	webhook.Client = yurtClient.GetClientByControllerNameOrDie(mgr, names.PlatformAdminController)
 
 	if err := webhook.initManifest(); err != nil {
 		return "", "", err
 	}
-
-	return webhookutil.GenerateMutatePath(gvk),
-		webhookutil.GenerateValidatePath(gvk),
-		ctrl.NewWebhookManagedBy(mgr).
-			For(&v1alpha1.PlatformAdmin{}).
-			WithDefaulter(webhook).
-			WithValidator(webhook).
-			Complete()
+	return webhookutil.RegisterWebhook(mgr, &v1alpha1.PlatformAdmin{}, webhook)
 }
 
 func (webhook *PlatformAdminHandler) initManifest() error {

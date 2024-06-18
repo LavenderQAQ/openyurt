@@ -42,6 +42,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
+	yurtClient "github.com/openyurtio/openyurt/cmd/yurt-manager/app/client"
 	appconfig "github.com/openyurtio/openyurt/cmd/yurt-manager/app/config"
 	"github.com/openyurtio/openyurt/cmd/yurt-manager/names"
 	ravenv1beta1 "github.com/openyurtio/openyurt/pkg/apis/raven/v1beta1"
@@ -76,7 +77,7 @@ type ReconcileService struct {
 // newReconciler returns a new reconcile.Reconciler
 func newReconciler(c *appconfig.CompletedConfig, mgr manager.Manager) reconcile.Reconciler {
 	return &ReconcileService{
-		Client:   mgr.GetClient(),
+		Client:   yurtClient.GetClientByControllerNameOrDie(mgr, names.GatewayInternalServiceController),
 		scheme:   mgr.GetScheme(),
 		recorder: mgr.GetEventRecorderFor(names.GatewayInternalServiceController),
 	}
@@ -93,13 +94,13 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 	}
 
 	// Watch for changes to Gateway
-	err = c.Watch(&source.Kind{Type: &ravenv1beta1.Gateway{}}, &EnqueueRequestForGatewayEvent{})
+	err = c.Watch(source.Kind(mgr.GetCache(), &ravenv1beta1.Gateway{}), &EnqueueRequestForGatewayEvent{})
 	if err != nil {
 		return err
 	}
 
 	//Watch for changes to raven agent
-	err = c.Watch(&source.Kind{Type: &corev1.ConfigMap{}}, &EnqueueRequestForConfigEvent{}, predicate.NewPredicateFuncs(
+	err = c.Watch(source.Kind(mgr.GetCache(), &corev1.ConfigMap{}), &EnqueueRequestForConfigEvent{}, predicate.NewPredicateFuncs(
 		func(object client.Object) bool {
 			cm, ok := object.(*corev1.ConfigMap)
 			if !ok {
@@ -120,6 +121,11 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 
 	return nil
 }
+
+// +kubebuilder:rbac:groups=core,resources=services,verbs=get;create;update;delete
+// +kubebuilder:rbac:groups=core,resources=endpoints,verbs=get;create;update;delete
+// +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get
+// +kubebuilder:rbac:groups=raven.openyurt.io,resources=gateways,verbs=get
 
 // Reconcile reads that state of the cluster for a Gateway object and makes changes based on the state read
 // and what is in the Gateway.Spec
@@ -383,7 +389,7 @@ func (r *ReconcileService) ensureSpecEndpoints(ctx context.Context, gateways []*
 
 func (r *ReconcileService) waitElectEndpoints(ctx context.Context, gwName string) (*ravenv1beta1.Gateway, error) {
 	var gw ravenv1beta1.Gateway
-	err := wait.PollImmediate(time.Second*5, time.Minute, func() (done bool, err error) {
+	err := wait.PollUntilContextTimeout(ctx, time.Second*5, time.Minute, true, func(ctx context.Context) (done bool, err error) {
 		err = r.Get(ctx, types.NamespacedName{Name: gwName}, &gw)
 		if err != nil {
 			return false, err

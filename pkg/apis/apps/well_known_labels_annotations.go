@@ -22,6 +22,9 @@ package apps
 
 // YurtAppSet & YurtAppDaemon related labels and annotations
 const (
+	// YurtAppSetOwnerLabelKey is used to record which yas owns this deployment
+	YurtAppSetOwnerLabelKey = "apps.openyurt.io/ref-yurtappset"
+
 	// ControllerRevisionHashLabelKey is used to record the controller revision of current resource.
 	ControllerRevisionHashLabelKey = "apps.openyurt.io/controller-revision-hash"
 
@@ -40,4 +43,11 @@ const (
 	DesiredNodePoolLabel     = "apps.openyurt.io/desired-nodepool"
 	NodePoolHostNetworkLabel = "nodepool.openyurt.io/hostnetwork"
 	NodePoolChangedEvent     = "NodePoolChanged"
+	NodePoolTypeLabel        = "nodepool.openyurt.io/type"
+)
+
+// Pod related labels and annotations
+const (
+	// AnnotationExcludeHostNetworkPool indicates the pod don't want to be scheduled to nodes in hostNetwork mode NodePool
+	AnnotationExcludeHostNetworkPool = "apps.openyurt.io/exclude-host-network-pool"
 )

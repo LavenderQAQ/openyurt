@@ -33,7 +33,6 @@ import (
 	intstrutil "k8s.io/apimachinery/pkg/util/intstr"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
@@ -48,6 +47,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
+	yurtClient "github.com/openyurtio/openyurt/cmd/yurt-manager/app/client"
 	appconfig "github.com/openyurtio/openyurt/cmd/yurt-manager/app/config"
 	"github.com/openyurtio/openyurt/cmd/yurt-manager/names"
 	k8sutil "github.com/openyurtio/openyurt/pkg/yurtmanager/controller/daemonpodupdater/kubernetes"
@@ -96,7 +96,11 @@ func Format(format string, args ...interface{}) string {
 // and Start it when the Manager is Started.
 func Add(ctx context.Context, c *appconfig.CompletedConfig, mgr manager.Manager) error {
 	klog.Infof("daemonupdater-controller add controller %s", controllerKind.String())
-	return add(mgr, c, newReconciler(c, mgr))
+	r, err := newReconciler(c, mgr)
+	if err != nil {
+		return err
+	}
+	return add(mgr, c, r)
 }
 
 var _ reconcile.Reconciler = &ReconcileDaemonpodupdater{}
@@ -110,26 +114,25 @@ type ReconcileDaemonpodupdater struct {
 }
 
 // newReconciler returns a new reconcile.Reconciler
-func newReconciler(_ *appconfig.CompletedConfig, mgr manager.Manager) reconcile.Reconciler {
-	return &ReconcileDaemonpodupdater{
-		Client:       mgr.GetClient(),
+func newReconciler(_ *appconfig.CompletedConfig, mgr manager.Manager) (reconcile.Reconciler, error) {
+	r := &ReconcileDaemonpodupdater{
+		Client:       yurtClient.GetClientByControllerNameOrDie(mgr, names.DaemonPodUpdaterController),
 		expectations: k8sutil.NewControllerExpectations(),
 		recorder:     mgr.GetEventRecorderFor(names.DaemonPodUpdaterController),
 	}
-}
 
-func (r *ReconcileDaemonpodupdater) InjectConfig(cfg *rest.Config) error {
-	c, err := kubernetes.NewForConfig(cfg)
+	c, err := kubernetes.NewForConfig(yurtClient.GetConfigByControllerNameOrDie(mgr, names.DaemonPodUpdaterController))
 	if err != nil {
 		klog.Errorf("could not create kube client, %v", err)
-		return err
+		return nil, err
 	}
 	// Use PodControlInterface to delete pods, which is convenient for testing
 	r.podControl = k8sutil.RealPodControl{
 		KubeClient: c,
 		Recorder:   r.recorder,
 	}
-	return nil
+
+	return r, nil
 }
 
 // add adds a new Controller to mgr with r as the reconcile.Reconciler
@@ -156,14 +159,14 @@ func add(mgr manager.Manager, cfg *appconfig.CompletedConfig, r reconcile.Reconc
 		},
 	}
 
-	if err := c.Watch(&source.Kind{Type: &appsv1.DaemonSet{}}, &handler.EnqueueRequestForObject{}, daemonsetUpdatePredicate); err != nil {
+	if err := c.Watch(source.Kind(mgr.GetCache(), &appsv1.DaemonSet{}), &handler.EnqueueRequestForObject{}, daemonsetUpdatePredicate); err != nil {
 		return err
 	}
 
 	// 2. Watch for deletion of pods. The reason we watch is that we don't want a daemon set to delete
 	// more pods until all the effects (expectations) of a daemon set's delete have been observed.
 	updater := r.(*ReconcileDaemonpodupdater)
-	if err := c.Watch(&source.Kind{Type: &corev1.Pod{}}, &handler.Funcs{
+	if err := c.Watch(source.Kind(mgr.GetCache(), &corev1.Pod{}), &handler.Funcs{
 		DeleteFunc: updater.deletePod,
 	}); err != nil {
 		return err
@@ -193,9 +196,9 @@ func daemonsetUpdate(evt event.UpdateEvent) bool {
 	return true
 }
 
-// +kubebuilder:rbac:groups=apps,resources=daemonsets,verbs=get;list;watch;update
-// +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=apps,resources=daemonsets,verbs=get;update
+// +kubebuilder:rbac:groups=core,resources=pods,verbs=get;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=nodes,verbs=get;update;patch
 
 // Reconcile reads that state of the cluster for a DaemonSet object and makes changes based on the state read
 // and what is in the DaemonSet.Spec
@@ -254,7 +257,7 @@ func (r *ReconcileDaemonpodupdater) Reconcile(_ context.Context, request reconci
 	return reconcile.Result{}, nil
 }
 
-func (r *ReconcileDaemonpodupdater) deletePod(evt event.DeleteEvent, _ workqueue.RateLimitingInterface) {
+func (r *ReconcileDaemonpodupdater) deletePod(ctx context.Context, evt event.DeleteEvent, _ workqueue.RateLimitingInterface) {
 	pod, ok := evt.Object.(*corev1.Pod)
 	if !ok {
 		utilruntime.HandleError(fmt.Errorf("deletepod could not deal with object that is not a pod %#v", evt.Object))

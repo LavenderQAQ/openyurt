@@ -17,6 +17,7 @@ limitations under the License.
 package components
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -33,11 +34,9 @@ import (
 
 	"github.com/openyurtio/openyurt/pkg/projectinfo"
 	kubeconfigutil "github.com/openyurtio/openyurt/pkg/util/kubeconfig"
-	tmplutil "github.com/openyurtio/openyurt/pkg/util/templates"
 	"github.com/openyurtio/openyurt/pkg/yurtadm/constants"
 	enutil "github.com/openyurtio/openyurt/pkg/yurtadm/util/edgenode"
 	"github.com/openyurtio/openyurt/pkg/yurthub/storage/disk"
-	"github.com/openyurtio/openyurt/pkg/yurthub/util"
 )
 
 const (
@@ -51,25 +50,16 @@ const (
 
 type yurtHubOperator struct {
 	apiServerAddr             string
-	yurthubImage              string
 	joinToken                 string
-	workingMode               util.WorkingMode
 	yurthubHealthCheckTimeout time.Duration
-	enableDummyIf             bool
-	enableNodePool            bool
 }
 
 // NewYurthubOperator new yurtHubOperator struct
-func NewYurthubOperator(apiServerAddr string, yurthubImage string, joinToken string,
-	workingMode util.WorkingMode, yurthubHealthCheckTimeout time.Duration, enableDummyIf, enableNodePool bool) *yurtHubOperator {
+func NewYurthubOperator(apiServerAddr string, joinToken string, yurthubHealthCheckTimeout time.Duration) *yurtHubOperator {
 	return &yurtHubOperator{
 		apiServerAddr:             apiServerAddr,
-		yurthubImage:              yurthubImage,
 		joinToken:                 joinToken,
-		workingMode:               workingMode,
 		yurthubHealthCheckTimeout: yurthubHealthCheckTimeout,
-		enableDummyIf:             enableDummyIf,
-		enableNodePool:            enableNodePool,
 	}
 }
 
@@ -100,12 +90,7 @@ func (op *yurtHubOperator) Install() error {
 		return fmt.Errorf("could not read source file %s: %w", configMapDataPath, err)
 	}
 	klog.Infof("yurt-hub.yaml apiServerAddr: %+v", op.apiServerAddr)
-	yssYurtHub, err := tmplutil.SubsituteTemplate(string(content), map[string]string{
-		"kubernetesServerAddr": op.apiServerAddr,
-	})
-	if err != nil {
-		return err
-	}
+	yssYurtHub := strings.ReplaceAll(string(content), "KUBERNETES_SERVER_ADDRESS", op.apiServerAddr)
 	if err = os.WriteFile(getYurthubYaml(podManifestPath), []byte(yssYurtHub), fileMode); err != nil {
 		return err
 	}
@@ -180,7 +165,7 @@ func waitUntilYurthubExit(timeout time.Duration, period time.Duration) error {
 	serverHealthzURL, _ := url.Parse(fmt.Sprintf("http://%s", constants.ServerHealthzServer))
 	serverHealthzURL.Path = constants.ServerHealthzURLPath
 
-	return wait.PollImmediate(period, timeout, func() (bool, error) {
+	return wait.PollUntilContextTimeout(context.Background(), period, timeout, true, func(ctx context.Context) (bool, error) {
 		_, err := pingClusterHealthz(http.DefaultClient, serverHealthzURL.String())
 		if err != nil { // means yurthub has exited
 			klog.Infof("yurt-hub is not running, with ping result: %v", err)
@@ -200,7 +185,7 @@ func hubHealthcheck(timeout time.Duration) error {
 	serverHealthzURL.Path = constants.ServerHealthzURLPath
 
 	start := time.Now()
-	return wait.PollImmediate(hubHealthzCheckFrequency, timeout, func() (bool, error) {
+	return wait.PollUntilContextTimeout(context.Background(), hubHealthzCheckFrequency, timeout, true, func(ctx context.Context) (bool, error) {
 		_, err := pingClusterHealthz(http.DefaultClient, serverHealthzURL.String())
 		if err != nil {
 			klog.Infof("yurt-hub is not ready, ping cluster healthz with result: %v", err)

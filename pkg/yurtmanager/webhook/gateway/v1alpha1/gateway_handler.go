@@ -18,8 +18,6 @@ package v1alpha1
 
 import (
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	"github.com/openyurtio/openyurt/pkg/apis/raven/v1alpha1"
@@ -28,25 +26,11 @@ import (
 
 // SetupWebhookWithManager sets up Cluster webhooks. 	mutate path, validatepath, error
 func (webhook *GatewayHandler) SetupWebhookWithManager(mgr ctrl.Manager) (string, string, error) {
-	// init
-	webhook.Client = mgr.GetClient()
-
-	gvk, err := apiutil.GVKForObject(&v1alpha1.Gateway{}, mgr.GetScheme())
-	if err != nil {
-		return "", "", err
-	}
-	return util.GenerateMutatePath(gvk),
-		util.GenerateValidatePath(gvk),
-		ctrl.NewWebhookManagedBy(mgr).
-			For(&v1alpha1.Gateway{}).
-			WithDefaulter(webhook).
-			WithValidator(webhook).
-			Complete()
+	return util.RegisterWebhook(mgr, &v1alpha1.Gateway{}, webhook)
 }
 
 // Cluster implements a validating and defaulting webhook for Cluster.
 type GatewayHandler struct {
-	Client client.Client
 }
 
 var _ webhook.CustomDefaulter = &GatewayHandler{}

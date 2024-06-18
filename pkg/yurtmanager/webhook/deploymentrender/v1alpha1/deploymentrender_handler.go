@@ -21,28 +21,20 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
+	yurtClient "github.com/openyurtio/openyurt/cmd/yurt-manager/app/client"
+	"github.com/openyurtio/openyurt/cmd/yurt-manager/names"
 	"github.com/openyurtio/openyurt/pkg/yurtmanager/webhook/util"
 )
 
 // SetupWebhookWithManager sets up Cluster webhooks. 	mutate path, validatepath, error
 func (webhook *DeploymentRenderHandler) SetupWebhookWithManager(mgr ctrl.Manager) (string, string, error) {
 	// init
-	webhook.Client = mgr.GetClient()
+	webhook.Client = yurtClient.GetClientByControllerNameOrDie(mgr, names.YurtAppOverriderController)
 	webhook.Scheme = mgr.GetScheme()
 
-	gvk, err := apiutil.GVKForObject(&v1.Deployment{}, mgr.GetScheme())
-	if err != nil {
-		return "", "", err
-	}
-	return util.GenerateMutatePath(gvk),
-		util.GenerateValidatePath(gvk),
-		ctrl.NewWebhookManagedBy(mgr).
-			For(&v1.Deployment{}).
-			WithDefaulter(webhook).
-			Complete()
+	return util.RegisterWebhook(mgr, &v1.Deployment{}, webhook)
 }
 
 // +kubebuilder:webhook:path=/mutate-apps-v1-deployment,mutating=true,failurePolicy=ignore,groups=apps,resources=deployments,verbs=create;update,versions=v1,name=mutate.apps.v1.deployment,sideEffects=None,admissionReviewVersions=v1
