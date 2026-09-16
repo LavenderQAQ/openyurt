@@ -17,18 +17,16 @@ limitations under the License.
 package options
 
 import (
-	"fmt"
 	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
 
 	"github.com/spf13/cobra"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/tools/leaderelection/resourcelock"
-	componentbaseconfig "k8s.io/component-base/config"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/openyurtio/openyurt/pkg/projectinfo"
+	"github.com/openyurtio/openyurt/pkg/yurthub/certificate"
 	"github.com/openyurtio/openyurt/pkg/yurthub/storage/disk"
 	"github.com/openyurtio/openyurt/pkg/yurthub/util"
 )
@@ -40,6 +38,7 @@ func TestNewYurtHubOptions(t *testing.T) {
 		YurtHubProxyPort:          util.YurtHubProxyPort,
 		YurtHubPort:               util.YurtHubPort,
 		YurtHubProxySecurePort:    util.YurtHubProxySecurePort,
+		PortForMultiplexer:        util.YurtHubMultiplexerPort,
 		YurtHubNamespace:          util.YurtHubNamespace,
 		GCFrequency:               120,
 		YurtHubCertOrganizations:  make([]string, 0),
@@ -54,7 +53,7 @@ func TestNewYurtHubOptions(t *testing.T) {
 		EnableProfiling:           true,
 		EnableDummyIf:             true,
 		EnableIptables:            false,
-		HubAgentDummyIfName:       fmt.Sprintf("%s-dummy0", projectinfo.GetHubName()),
+		HubAgentDummyIfName:       "hub-dummy0",
 		DiskCachePath:             disk.CacheBaseDir,
 		EnableResourceFilter:      true,
 		DisabledResourceFilters:   make([]string, 0),
@@ -63,18 +62,10 @@ func TestNewYurtHubOptions(t *testing.T) {
 		EnableNodePool:            true,
 		MinRequestTimeout:         time.Second * 1800,
 		CACertHashes:              make([]string, 0),
-		UnsafeSkipCAVerification:  true,
-		CoordinatorServerAddr:     fmt.Sprintf("https://%s:%s", util.DefaultYurtCoordinatorAPIServerSvcName, util.DefaultYurtCoordinatorAPIServerSvcPort),
-		CoordinatorStorageAddr:    fmt.Sprintf("https://%s:%s", util.DefaultYurtCoordinatorEtcdSvcName, util.DefaultYurtCoordinatorEtcdSvcPort),
-		CoordinatorStoragePrefix:  "/registry",
-		LeaderElection: componentbaseconfig.LeaderElectionConfiguration{
-			LeaderElect:       true,
-			LeaseDuration:     metav1.Duration{Duration: 15 * time.Second},
-			RenewDeadline:     metav1.Duration{Duration: 10 * time.Second},
-			RetryPeriod:       metav1.Duration{Duration: 2 * time.Second},
-			ResourceLock:      resourcelock.LeasesResourceLock,
-			ResourceName:      projectinfo.GetHubName(),
-			ResourceNamespace: "kube-system",
+		UnsafeSkipCAVerification:  false,
+		PoolScopeResources: []schema.GroupVersionResource{
+			{Group: "", Version: "v1", Resource: "services"},
+			{Group: "discovery.k8s.io", Version: "v1", Resource: "endpointslices"},
 		},
 	}
 
@@ -106,6 +97,32 @@ func TestValidate(t *testing.T) {
 				ServerAddr: "1.2.3.4:56",
 			},
 			isErr: true,
+		},
+		"secure default requires ca cert hashes": {
+			options: func() *YurtHubOptions {
+				o := NewYurtHubOptions()
+				o.NodeName = "foo"
+				o.ServerAddr = "1.2.3.4:56"
+				o.JoinToken = "xxxx"
+				o.LBMode = "rr"
+				o.WorkingMode = "cloud"
+				o.NodePoolName = "foo"
+				return o
+			}(),
+			isErr: true,
+		},
+		"kubelet certificate bootstrap does not require ca cert hashes": {
+			options: func() *YurtHubOptions {
+				o := NewYurtHubOptions()
+				o.NodeName = "foo"
+				o.ServerAddr = "1.2.3.4:56"
+				o.BootstrapMode = certificate.KubeletCertificateBootstrapMode
+				o.LBMode = "rr"
+				o.WorkingMode = "cloud"
+				o.NodePoolName = "foo"
+				return o
+			}(),
+			isErr: false,
 		},
 		"invalid lb mode": {
 			options: &YurtHubOptions{
@@ -189,18 +206,20 @@ func TestValidate(t *testing.T) {
 				LBMode:                   "rr",
 				WorkingMode:              "cloud",
 				UnsafeSkipCAVerification: true,
+				NodePoolName:             "foo",
 			},
 			isErr: false,
 		},
-		"normal options with ipv4": {
+		"normal options with ca cert hashes": {
 			options: &YurtHubOptions{
 				NodeName:                 "foo",
 				ServerAddr:               "1.2.3.4:56",
 				JoinToken:                "xxxx",
 				LBMode:                   "rr",
 				WorkingMode:              "cloud",
-				UnsafeSkipCAVerification: true,
-				HubAgentDummyIfIP:        "fd00::2:1",
+				CACertHashes:             []string{"sha256:abcdef"},
+				UnsafeSkipCAVerification: false,
+				NodePoolName:             "foo",
 			},
 			isErr: false,
 		},
@@ -212,9 +231,41 @@ func TestValidate(t *testing.T) {
 				LBMode:                   "rr",
 				WorkingMode:              "cloud",
 				UnsafeSkipCAVerification: true,
-				HubAgentDummyIfIP:        "169.254.2.1",
+				HubAgentDummyIfIP:        "fd00::2:1",
+				NodePoolName:             "foo",
 			},
 			isErr: false,
+		},
+		"normal options with ipv4": {
+			options: &YurtHubOptions{
+				NodeName:                 "foo",
+				ServerAddr:               "1.2.3.4:56",
+				JoinToken:                "xxxx",
+				LBMode:                   "rr",
+				WorkingMode:              "cloud",
+				UnsafeSkipCAVerification: true,
+				HubAgentDummyIfIP:        "169.254.2.1",
+				NodePoolName:             "foo",
+			},
+			isErr: false,
+		},
+		"host-control-plane-address in local mode": {
+			options: &YurtHubOptions{
+				NodeName:             "foo",
+				WorkingMode:          "local",
+				ServerAddr:           "1.2.3.4:56",
+				HostControlPlaneAddr: "123.123.123.123",
+			},
+			isErr: false,
+		},
+		"no host-control-plane-address in local mode": {
+			options: &YurtHubOptions{
+				NodeName:             "foo",
+				WorkingMode:          "local",
+				ServerAddr:           "1.2.3.4:56",
+				HostControlPlaneAddr: "",
+			},
+			isErr: true,
 		},
 	}
 

@@ -40,11 +40,15 @@ func WithFakeTokenInject(handler http.Handler, serializerManager *serializer.Ser
 	tokenRequestGVR := authv1.SchemeGroupVersion.WithResource("tokenrequests")
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		ctx := req.Context()
-		info, _ := apirequest.RequestInfoFrom(ctx)
+		info, ok := apirequest.RequestInfoFrom(ctx)
+		if !ok || info == nil {
+			handler.ServeHTTP(w, req)
+			return
+		}
 		if info.Resource == "serviceaccounts" && info.Subresource == "token" {
 			klog.Infof("find serviceaccounts token request when cluster is unhealthy, try to write fake token to response.")
 			var buf bytes.Buffer
-			headerNStr := req.Header.Get(yurtutil.HttpHeaderContentLength)
+			headerNStr := req.Header.Get(yurtutil.HTTPHeaderContentLength)
 			headerN, _ := strconv.Atoi(headerNStr)
 			n, err := buf.ReadFrom(req.Body)
 			if err != nil || (headerN != 0 && int(n) != headerN) {
@@ -58,7 +62,7 @@ func WithFakeTokenInject(handler http.Handler, serializerManager *serializer.Ser
 				return
 			}
 
-			tokenRequset, err := getTokenRequestWithFakeToken(buf.Bytes(), info, req, s)
+			tokenRequest, err := getTokenRequestWithFakeToken(buf.Bytes(), info, req, s)
 			if err != nil {
 				klog.Errorf("skip fake token inject for request %s when cluster is unhealthy, could not get token request: %v", util.ReqString(req), err)
 				writeRequestDirectly(w, req, buf.Bytes(), n)
@@ -66,7 +70,7 @@ func WithFakeTokenInject(handler http.Handler, serializerManager *serializer.Ser
 			}
 
 			klog.Infof("write fake token for request %s when cluster is unhealthy", util.ReqString(req))
-			err = util.WriteObject(http.StatusCreated, tokenRequset, w, req)
+			err = util.WriteObject(http.StatusCreated, tokenRequest, w, req)
 			if err != nil {
 				klog.Errorf("write fake token resp for token request when cluster is unhealthy with error, %v", err)
 			}
@@ -96,7 +100,7 @@ func writeRequestDirectly(w http.ResponseWriter, req *http.Request, data []byte,
 func getTokenRequestWithFakeToken(data []byte, info *apirequest.RequestInfo, req *http.Request, s *serializer.Serializer) (*authv1.TokenRequest, error) {
 	obj, err := s.Decode(data)
 	if err != nil || obj == nil {
-		return nil, errors.Errorf("decode reuqest with error %v", err)
+		return nil, errors.Errorf("decode request with error %v", err)
 	}
 	if tokenRequest, ok := obj.(*authv1.TokenRequest); ok {
 		token, err := getFakeToken(info.Namespace, info.Name)

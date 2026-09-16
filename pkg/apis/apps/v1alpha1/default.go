@@ -22,7 +22,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	v1 "k8s.io/kubernetes/pkg/apis/core/v1"
-	utilpointer "k8s.io/utils/pointer"
+	utilpointer "k8s.io/utils/ptr"
 )
 
 // SetDefaultsNodePool set default values for NodePool.
@@ -38,7 +38,7 @@ func SetDefaultsNodePool(obj *NodePool) {
 func SetDefaultsYurtAppSet(obj *YurtAppSet) {
 
 	if obj.Spec.RevisionHistoryLimit == nil {
-		obj.Spec.RevisionHistoryLimit = utilpointer.Int32(10)
+		obj.Spec.RevisionHistoryLimit = utilpointer.To[int32](10)
 	}
 
 	if obj.Spec.WorkloadTemplate.StatefulSetTemplate != nil {
@@ -62,37 +62,28 @@ func SetDefaultPodSpec(in *corev1.PodSpec) {
 	for i := range in.Volumes {
 		a := &in.Volumes[i]
 		v1.SetDefaults_Volume(a)
-		if a.VolumeSource.HostPath != nil {
-			v1.SetDefaults_HostPathVolumeSource(a.VolumeSource.HostPath)
+		if a.HostPath != nil {
+			v1.SetDefaults_HostPathVolumeSource(a.HostPath)
 		}
-		if a.VolumeSource.Secret != nil {
-			v1.SetDefaults_SecretVolumeSource(a.VolumeSource.Secret)
+		if a.Secret != nil {
+			v1.SetDefaults_SecretVolumeSource(a.Secret)
 		}
-		if a.VolumeSource.ISCSI != nil {
-			v1.SetDefaults_ISCSIVolumeSource(a.VolumeSource.ISCSI)
-		}
-		if a.VolumeSource.RBD != nil {
-			v1.SetDefaults_RBDVolumeSource(a.VolumeSource.RBD)
-		}
-		if a.VolumeSource.DownwardAPI != nil {
-			v1.SetDefaults_DownwardAPIVolumeSource(a.VolumeSource.DownwardAPI)
-			for j := range a.VolumeSource.DownwardAPI.Items {
-				b := &a.VolumeSource.DownwardAPI.Items[j]
+		if a.DownwardAPI != nil {
+			v1.SetDefaults_DownwardAPIVolumeSource(a.DownwardAPI)
+			for j := range a.DownwardAPI.Items {
+				b := &a.DownwardAPI.Items[j]
 				if b.FieldRef != nil {
 					v1.SetDefaults_ObjectFieldSelector(b.FieldRef)
 				}
 			}
 		}
-		if a.VolumeSource.ConfigMap != nil {
-			v1.SetDefaults_ConfigMapVolumeSource(a.VolumeSource.ConfigMap)
+		if a.ConfigMap != nil {
+			v1.SetDefaults_ConfigMapVolumeSource(a.ConfigMap)
 		}
-		if a.VolumeSource.AzureDisk != nil {
-			v1.SetDefaults_AzureDiskVolumeSource(a.VolumeSource.AzureDisk)
-		}
-		if a.VolumeSource.Projected != nil {
-			v1.SetDefaults_ProjectedVolumeSource(a.VolumeSource.Projected)
-			for j := range a.VolumeSource.Projected.Sources {
-				b := &a.VolumeSource.Projected.Sources[j]
+		if a.Projected != nil {
+			v1.SetDefaults_ProjectedVolumeSource(a.Projected)
+			for j := range a.Projected.Sources {
+				b := &a.Projected.Sources[j]
 				if b.DownwardAPI != nil {
 					for k := range b.DownwardAPI.Items {
 						c := &b.DownwardAPI.Items[k]
@@ -106,16 +97,13 @@ func SetDefaultPodSpec(in *corev1.PodSpec) {
 				}
 			}
 		}
-		if a.VolumeSource.ScaleIO != nil {
-			v1.SetDefaults_ScaleIOVolumeSource(a.VolumeSource.ScaleIO)
-		}
 	}
 	for i := range in.InitContainers {
 		a := &in.InitContainers[i]
 		v1.SetDefaults_Container(a)
 		for j := range a.Ports {
 			b := &a.Ports[j]
-			SetDefaults_ContainerPort(b)
+			SetDefaultsContainerPort(b)
 		}
 		for j := range a.Env {
 			b := &a.Env[j]
@@ -129,14 +117,14 @@ func SetDefaultPodSpec(in *corev1.PodSpec) {
 		v1.SetDefaults_ResourceList(&a.Resources.Requests)
 		if a.LivenessProbe != nil {
 			v1.SetDefaults_Probe(a.LivenessProbe)
-			if a.LivenessProbe.ProbeHandler.HTTPGet != nil {
-				v1.SetDefaults_HTTPGetAction(a.LivenessProbe.ProbeHandler.HTTPGet)
+			if a.LivenessProbe.HTTPGet != nil {
+				v1.SetDefaults_HTTPGetAction(a.LivenessProbe.HTTPGet)
 			}
 		}
 		if a.ReadinessProbe != nil {
 			v1.SetDefaults_Probe(a.ReadinessProbe)
-			if a.ReadinessProbe.ProbeHandler.HTTPGet != nil {
-				v1.SetDefaults_HTTPGetAction(a.ReadinessProbe.ProbeHandler.HTTPGet)
+			if a.ReadinessProbe.HTTPGet != nil {
+				v1.SetDefaults_HTTPGetAction(a.ReadinessProbe.HTTPGet)
 			}
 		}
 		if a.Lifecycle != nil {
@@ -161,7 +149,7 @@ func SetDefaultPodSpec(in *corev1.PodSpec) {
 		v1.SetDefaults_Container(a)
 		for j := range a.Ports {
 			b := &a.Ports[j]
-			SetDefaults_ContainerPort(b)
+			SetDefaultsContainerPort(b)
 		}
 		for j := range a.Env {
 			b := &a.Env[j]
@@ -175,14 +163,14 @@ func SetDefaultPodSpec(in *corev1.PodSpec) {
 		v1.SetDefaults_ResourceList(&a.Resources.Requests)
 		if a.LivenessProbe != nil {
 			v1.SetDefaults_Probe(a.LivenessProbe)
-			if a.LivenessProbe.ProbeHandler.HTTPGet != nil {
-				v1.SetDefaults_HTTPGetAction(a.LivenessProbe.ProbeHandler.HTTPGet)
+			if a.LivenessProbe.HTTPGet != nil {
+				v1.SetDefaults_HTTPGetAction(a.LivenessProbe.HTTPGet)
 			}
 		}
 		if a.ReadinessProbe != nil {
 			v1.SetDefaults_Probe(a.ReadinessProbe)
-			if a.ReadinessProbe.ProbeHandler.HTTPGet != nil {
-				v1.SetDefaults_HTTPGetAction(a.ReadinessProbe.ProbeHandler.HTTPGet)
+			if a.ReadinessProbe.HTTPGet != nil {
+				v1.SetDefaults_HTTPGetAction(a.ReadinessProbe.HTTPGet)
 			}
 		}
 		if a.Lifecycle != nil {
@@ -201,7 +189,7 @@ func SetDefaultPodSpec(in *corev1.PodSpec) {
 }
 
 // TODO fix copy from https://github.com/contiv/client-go/blob/v2.0.0-alpha.1/pkg/api/v1/defaults.go#L104
-func SetDefaults_ContainerPort(obj *corev1.ContainerPort) {
+func SetDefaultsContainerPort(obj *corev1.ContainerPort) {
 	if obj.Protocol == "" {
 		obj.Protocol = corev1.ProtocolTCP
 	}
@@ -225,36 +213,11 @@ func SetDefaultsYurtStaticSet(obj *YurtStaticSet) {
 		*obj.Spec.RevisionHistoryLimit = 10
 	}
 
-	podSpec := &obj.Spec.Template.Spec
-	if podSpec != nil {
-		SetDefaultPodSpec(podSpec)
-	}
+	SetDefaultPodSpec(&obj.Spec.Template.Spec)
 
 	// use YurtStaticSet name and namespace to replace name and namespace in template metadata
 	obj.Spec.Template.Name = obj.Name
 	obj.Spec.Template.Namespace = obj.Namespace
-}
-
-// SetDefaultsYurtAppDaemon set default values for YurtAppDaemon.
-func SetDefaultsYurtAppDaemon(obj *YurtAppDaemon) {
-
-	if obj.Spec.RevisionHistoryLimit == nil {
-		obj.Spec.RevisionHistoryLimit = utilpointer.Int32(10)
-	}
-
-	if obj.Spec.WorkloadTemplate.StatefulSetTemplate != nil {
-		SetDefaultPodSpec(&obj.Spec.WorkloadTemplate.StatefulSetTemplate.Spec.Template.Spec)
-		for i := range obj.Spec.WorkloadTemplate.StatefulSetTemplate.Spec.VolumeClaimTemplates {
-			a := &obj.Spec.WorkloadTemplate.StatefulSetTemplate.Spec.VolumeClaimTemplates[i]
-			v1.SetDefaults_PersistentVolumeClaim(a)
-			v1.SetDefaults_ResourceList(&a.Spec.Resources.Limits)
-			v1.SetDefaults_ResourceList(&a.Spec.Resources.Requests)
-			v1.SetDefaults_ResourceList(&a.Status.Capacity)
-		}
-	}
-	if obj.Spec.WorkloadTemplate.DeploymentTemplate != nil {
-		SetDefaultPodSpec(&obj.Spec.WorkloadTemplate.DeploymentTemplate.Spec.Template.Spec)
-	}
 }
 
 // SetDefaultsNodeBucket set default values for NodeBucket.

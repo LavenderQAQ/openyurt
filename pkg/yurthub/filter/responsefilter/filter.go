@@ -22,17 +22,17 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"strings"
+	"sync"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/watch"
 	apirequest "k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/klog/v2"
 
 	yurtutil "github.com/openyurtio/openyurt/pkg/util"
 	"github.com/openyurtio/openyurt/pkg/yurthub/filter"
+	"github.com/openyurtio/openyurt/pkg/yurthub/filter/objectfilter"
 	"github.com/openyurtio/openyurt/pkg/yurthub/kubernetes/serializer"
 	"github.com/openyurtio/openyurt/pkg/yurthub/util"
 )
@@ -47,6 +47,8 @@ type filterReadCloser struct {
 	isList       bool
 	ownerName    string
 	stopCh       <-chan struct{}
+	closeCh      chan struct{}
+	closeOnce    sync.Once
 }
 
 // newFilterReadCloser create an filterReadCloser object
@@ -76,6 +78,7 @@ func newFilterReadCloser(
 		isList:       info.Verb == "list",
 		ownerName:    ownerName,
 		stopCh:       stopCh,
+		closeCh:      make(chan struct{}),
 	}
 
 	if frc.isWatch {
@@ -95,28 +98,28 @@ func newFilterReadCloser(
 
 // Read get data into p and write into pipe
 func (frc *filterReadCloser) Read(p []byte) (int, error) {
-	var ok bool
-	if frc.isWatch {
-		if frc.filterCache.Len() != 0 {
-			return frc.filterCache.Read(p)
-		} else {
-			frc.filterCache.Reset()
-		}
-
-		select {
-		case frc.filterCache, ok = <-frc.watchDataCh:
-			if !ok {
-				return 0, io.EOF
-			}
-			return frc.filterCache.Read(p)
-		}
-	} else {
+	// direct read if not watching or if cache has data
+	if !frc.isWatch || frc.filterCache.Len() != 0 {
 		return frc.filterCache.Read(p)
 	}
+
+	// frc.isWatch is true and cache is empty
+	frc.filterCache.Reset()
+
+	var ok bool
+	if frc.filterCache, ok = <-frc.watchDataCh; !ok {
+		return 0, io.EOF
+	}
+
+	// read from the filterCache after receiving new data
+	return frc.filterCache.Read(p)
 }
 
 // Close will close readers
 func (frc *filterReadCloser) Close() error {
+	frc.closeOnce.Do(func() {
+		close(frc.closeCh)
+	})
 	if frc.filterCache != nil {
 		frc.filterCache.Reset()
 	}
@@ -181,7 +184,7 @@ func (frc *filterReadCloser) streamResponseFilter(rc io.ReadCloser, ch chan *byt
 
 		newObj := obj
 		// BOOKMARK and ERROR response are unnecessary to filter
-		if !(watchType == watch.Bookmark || watchType == watch.Error) {
+		if watchType != watch.Bookmark && watchType != watch.Error {
 			if newObj = frc.objectFilter.Filter(obj, frc.stopCh); yurtutil.IsNil(newObj) {
 				// if an object is removed in the filter chain, it means that this object is not needed
 				// to return back to clients(like kube-proxy). but in order to update the client's local cache,
@@ -202,7 +205,13 @@ func (frc *filterReadCloser) streamResponseFilter(rc io.ReadCloser, ch chan *byt
 			klog.Errorf("could not encode resource in StreamResponseFilter of %s, %v", frc.ownerName, err)
 			return err
 		}
-		ch <- buf
+		select {
+		case ch <- buf:
+		case <-frc.stopCh:
+			return nil
+		case <-frc.closeCh:
+			return nil
+		}
 	}
 }
 
@@ -214,38 +223,6 @@ func createSerializer(respContentType string, info *apirequest.RequestInfo, sm *
 	return sm.CreateSerializer(respContentType, info.APIGroup, info.APIVersion, info.Resource)
 }
 
-type filterChain []filter.ObjectFilter
-
-func createFilterChain(objFilters []filter.ObjectFilter) filter.ObjectFilter {
-	chain := make(filterChain, 0)
-	chain = append(chain, objFilters...)
-	return chain
-}
-
-func (chain filterChain) Name() string {
-	var names []string
-	for i := range chain {
-		names = append(names, chain[i].Name())
-	}
-	return strings.Join(names, ",")
-}
-
-func (chain filterChain) SupportedResourceAndVerbs() map[string]sets.Set[string] {
-	// do nothing
-	return map[string]sets.Set[string]{}
-}
-
-func (chain filterChain) Filter(obj runtime.Object, stopCh <-chan struct{}) runtime.Object {
-	for i := range chain {
-		obj = chain[i].Filter(obj, stopCh)
-		if yurtutil.IsNil(obj) {
-			break
-		}
-	}
-
-	return obj
-}
-
 type responseFilter struct {
 	objectFilter      filter.ObjectFilter
 	serializerManager *serializer.SerializerManager
@@ -253,7 +230,7 @@ type responseFilter struct {
 
 func CreateResponseFilter(objectFilters []filter.ObjectFilter, serializerManager *serializer.SerializerManager) filter.ResponseFilter {
 	return &responseFilter{
-		objectFilter:      createFilterChain(objectFilters),
+		objectFilter:      objectfilter.CreateFilterChain(objectFilters),
 		serializerManager: serializerManager,
 	}
 }

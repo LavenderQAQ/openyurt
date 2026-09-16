@@ -39,6 +39,24 @@ subjects:
   namespace: {{ .Release.Namespace }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: yurt-hub-multiplexer-binding
+subjects:
+  - kind: Group
+    apiGroup: rbac.authorization.k8s.io
+    name: openyurt:multiplexer
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: yurt-hub-multiplexer
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: yurt-hub-multiplexer
+---
+apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: yurt-manager-webhook-role-binding
@@ -114,9 +132,15 @@ spec:
             {{- if .Values.disableIndependentWebhooks }}
             - --disable-independent-webhooks={{ .Values.disableIndependentWebhooks }}
             {{- end }}
+            {{- with .Values.nodeServant.image }}
+            - --node-servant-image={{ printf "%s/%s:%s" .registry .repository .tag }}
+            {{- end }}
+            {{- range .Values.extraArgs }}
+            - {{ . }}
+            {{- end }}
           command:
             - /usr/local/bin/yurt-manager
-          image: {{ .Values.image.registry }}/{{ .Values.image.repository }}:{{ .Values.image.tag }}
+          image: {{ .Values.image.registry }}/{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}
           imagePullPolicy: IfNotPresent
           name: yurt-manager
           ports:

@@ -150,18 +150,58 @@ func mockKubeClient() client.Client {
 	return fake.NewClientBuilder().WithRuntimeObjects(objs...).Build()
 }
 
-func mockReconciler() *ReconcileDns {
-	return &ReconcileDns{
+func mockReconciler() *ReconcileDNS {
+	return &ReconcileDNS{
 		Client:   mockKubeClient(),
 		recorder: record.NewFakeRecorder(100),
 	}
 }
 
-func TestReconcileDns_Reconcile(t *testing.T) {
+func TestReconcileDNS_Reconcile(t *testing.T) {
 	r := mockReconciler()
 	t.Run("get dns configmap", func(t *testing.T) {
 		res, err := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: types.NamespacedName{Namespace: util.WorkingNamespace, Name: util.RavenProxyNodesConfig}})
 		assert.Equal(t, reconcile.Result{}, res)
 		assert.Equal(t, err, nil)
+	})
+}
+
+func TestReconcileDNS_buildRavenDNSConfigMap(t *testing.T) {
+	r := mockReconciler()
+	t.Run("build Raven DNS config map", func(t *testing.T) {
+		r.Delete(context.TODO(), &v1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: util.RavenProxyNodesConfig, Namespace: util.WorkingNamespace}})
+
+		err := r.buildRavenDNSConfigMap()
+		assert.NoError(t, err, "expected no error")
+
+		cm := &v1.ConfigMap{}
+		err = r.Get(context.TODO(), client.ObjectKey{
+			Namespace: util.WorkingNamespace,
+			Name:      util.RavenProxyNodesConfig,
+		}, cm)
+
+		assert.NoError(t, err, "expected ConfigMap to be created")
+		assert.Equal(t, util.WorkingNamespace, cm.Namespace, "expected correct namespace")
+		assert.Equal(t, util.RavenProxyNodesConfig, cm.Name, "expected correct name")
+		assert.Equal(t, "", cm.Data[util.ProxyNodesKey], "expected correct data")
+	})
+}
+
+func TestReconcileDNS_getService(t *testing.T) {
+
+	r := mockReconciler()
+	objectKey := types.NamespacedName{
+		Name:      MockProxySvc,
+		Namespace: util.WorkingNamespace,
+	}
+
+	t.Run("get service", func(t *testing.T) {
+		svc, err := r.getService(context.TODO(), objectKey)
+		assert.NoError(t, err, "expected no error")
+		assert.NotNil(t, svc, "expected a service to be returned")
+		assert.Equal(t, MockProxySvc, svc.Name, "expected correct service name")
+		assert.Equal(t, util.WorkingNamespace, svc.Namespace, "expected correct namespace")
+		assert.Equal(t, v1.ServiceTypeClusterIP, svc.Spec.Type, "expected correct spec type")
+		assert.Equal(t, ProxyIP, svc.Spec.ClusterIP, "expected correct clusterIP")
 	})
 }

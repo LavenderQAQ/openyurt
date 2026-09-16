@@ -31,7 +31,11 @@ import (
 	"github.com/openyurtio/openyurt/cmd/yurt-manager/app/config"
 	"github.com/openyurtio/openyurt/cmd/yurt-manager/names"
 	"github.com/openyurtio/openyurt/pkg/yurtmanager/controller/csrapprover"
-	"github.com/openyurtio/openyurt/pkg/yurtmanager/controller/daemonpodupdater"
+	"github.com/openyurtio/openyurt/pkg/yurtmanager/controller/daemonsetupgradestrategy/daemonpodupdater"
+	"github.com/openyurtio/openyurt/pkg/yurtmanager/controller/daemonsetupgradestrategy/imagepreheat"
+	"github.com/openyurtio/openyurt/pkg/yurtmanager/controller/hubleader"
+	"github.com/openyurtio/openyurt/pkg/yurtmanager/controller/hubleaderconfig"
+	"github.com/openyurtio/openyurt/pkg/yurtmanager/controller/hubleaderrbac"
 	"github.com/openyurtio/openyurt/pkg/yurtmanager/controller/loadbalancerset/loadbalancerset"
 	"github.com/openyurtio/openyurt/pkg/yurtmanager/controller/nodebucket"
 	"github.com/openyurtio/openyurt/pkg/yurtmanager/controller/nodelifecycle"
@@ -43,12 +47,9 @@ import (
 	"github.com/openyurtio/openyurt/pkg/yurtmanager/controller/raven/gatewaypublicservice"
 	servicetopologyendpoints "github.com/openyurtio/openyurt/pkg/yurtmanager/controller/servicetopology/endpoints"
 	servicetopologyendpointslice "github.com/openyurtio/openyurt/pkg/yurtmanager/controller/servicetopology/endpointslice"
-	"github.com/openyurtio/openyurt/pkg/yurtmanager/controller/yurtappdaemon"
-	"github.com/openyurtio/openyurt/pkg/yurtmanager/controller/yurtappoverrider"
 	"github.com/openyurtio/openyurt/pkg/yurtmanager/controller/yurtappset"
-	yurtcoordinatorcert "github.com/openyurtio/openyurt/pkg/yurtmanager/controller/yurtcoordinator/cert"
-	"github.com/openyurtio/openyurt/pkg/yurtmanager/controller/yurtcoordinator/delegatelease"
 	"github.com/openyurtio/openyurt/pkg/yurtmanager/controller/yurtcoordinator/podbinding"
+	"github.com/openyurtio/openyurt/pkg/yurtmanager/controller/yurtnodeconversion"
 	"github.com/openyurtio/openyurt/pkg/yurtmanager/controller/yurtstaticset"
 )
 
@@ -81,16 +82,13 @@ func NewControllerInitializers() map[string]InitFunc {
 
 	register(names.CsrApproverController, csrapprover.Add)
 	register(names.DaemonPodUpdaterController, daemonpodupdater.Add)
-	register(names.DelegateLeaseController, delegatelease.Add)
 	register(names.PodBindingController, podbinding.Add)
 	register(names.NodePoolController, nodepool.Add)
-	register(names.YurtCoordinatorCertController, yurtcoordinatorcert.Add)
 	register(names.ServiceTopologyEndpointsController, servicetopologyendpoints.Add)
 	register(names.ServiceTopologyEndpointSliceController, servicetopologyendpointslice.Add)
 	register(names.YurtStaticSetController, yurtstaticset.Add)
+	register(names.YurtNodeConversionController, yurtnodeconversion.Add)
 	register(names.YurtAppSetController, yurtappset.Add)
-	register(names.YurtAppDaemonController, yurtappdaemon.Add)
-	register(names.YurtAppOverriderController, yurtappoverrider.Add)
 	register(names.PlatformAdminController, platformadmin.Add)
 	register(names.GatewayPickupController, gatewaypickup.Add)
 	register(names.GatewayDNSController, dns.Add)
@@ -99,6 +97,11 @@ func NewControllerInitializers() map[string]InitFunc {
 	register(names.NodeLifeCycleController, nodelifecycle.Add)
 	register(names.NodeBucketController, nodebucket.Add)
 	register(names.LoadBalancerSetController, loadbalancerset.Add)
+	register(names.HubLeaderController, hubleader.Add)
+	register(names.HubLeaderConfigController, hubleaderconfig.Add)
+	register(names.HubLeaderRBACController, hubleaderrbac.Add)
+
+	register(names.ImagePreheatController, imagepreheat.Add)
 
 	return controllers
 }
@@ -129,16 +132,20 @@ func NewControllerInitializers() map[string]InitFunc {
 // +kubebuilder:rbac:groups=apps.openyurt.io,resources=yurtappdaemons,verbs=list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=list;watch
 // +kubebuilder:rbac:groups=apps,resources=controllerrevisions,verbs=list;watch
-// +kubebuilder:rbac:groups=apps.openyurt.io,resources=yurtappoverriders,verbs=list;watch
+// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=list;watch
 // +kubebuilder:rbac:groups=apps.openyurt.io,resources=yurtappsets,verbs=list;watch
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=list;watch
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=list;watch
 // +kubebuilder:rbac:groups=apps.openyurt.io,resources=yurtstaticsets,verbs=list;watch
 // +kubebuilder:rbac:groups=crd.projectcalico.org,resources=blockaffinities,verbs=list;watch
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,verbs=list;watch
 
 func SetupWithManager(ctx context.Context, c *config.CompletedConfig, m manager.Manager) error {
 	for controllerName, fn := range NewControllerInitializers() {
-		if !app.IsControllerEnabled(controllerName, ControllersDisabledByDefault, c.ComponentConfig.Generic.Controllers) {
+		if !app.IsControllerEnabled(
+			controllerName,
+			ControllersDisabledByDefault,
+			c.ComponentConfig.Generic.Controllers,
+		) {
 			klog.Warningf("Controller %v is disabled", controllerName)
 			continue
 		}
@@ -154,8 +161,21 @@ func SetupWithManager(ctx context.Context, c *config.CompletedConfig, m manager.
 		}
 	}
 
-	if app.IsControllerEnabled(names.NodeLifeCycleController, ControllersDisabledByDefault, c.ComponentConfig.Generic.Controllers) ||
-		app.IsControllerEnabled(names.PodBindingController, ControllersDisabledByDefault, c.ComponentConfig.Generic.Controllers) {
+	if app.IsControllerEnabled(
+		names.NodeLifeCycleController,
+		ControllersDisabledByDefault,
+		c.ComponentConfig.Generic.Controllers,
+	) ||
+		app.IsControllerEnabled(
+			names.YurtNodeConversionController,
+			ControllersDisabledByDefault,
+			c.ComponentConfig.Generic.Controllers,
+		) ||
+		app.IsControllerEnabled(
+			names.PodBindingController,
+			ControllersDisabledByDefault,
+			c.ComponentConfig.Generic.Controllers,
+		) {
 		// Register spec.NodeName field indexers
 		if err := m.GetFieldIndexer().IndexField(context.TODO(), &v1.Pod{}, "spec.nodeName", func(rawObj client.Object) []string {
 			pod, ok := rawObj.(*v1.Pod)

@@ -2,24 +2,28 @@
 
 ## Table of Contents
 
-- [Yurt-Express: OpenYurt data transmission system](#yurt-express--openyurt-data-transmission-system)
+- [Yurt-Express: OpenYurt data transmission system](#yurt-express-openyurt-data-transmission-system)
   - [Table of Contents](#table-of-contents)
   - [Glossary](#glossary)
+    - [EdgeDataUpload](#edgedataupload)
+    - [DataTunnel](#datatunnel)
   - [Summary](#summary)
     - [Goals](#goals)
     - [Non-Goals/Future Work](#non-goalsfuture-work)
   - [Proposal](#proposal)
     - [User Stories](#user-stories)
     - [Overview](#overview)
-    - [Yurt-Express Proposal](#yurtexpress-proposal)
+    - [YurtExpress Proposal](#yurtexpress-proposal)
       - [1. Data Message Definition](#1-data-message-definition)
       - [2. Yurt Express Channel](#2-yurt-express-channel)
       - [3. Data Tunnel Definition](#3-data-tunnel-definition)
       - [4. Data Receiver Definition](#4-data-receiver-definition)
       - [5. Data Deliver Definition](#5-data-deliver-definition)
-      - [6. Wave Delivery Manager](#6-wave-delivery-manager)
+      - [6. Wave delivery manager](#6-wave-delivery-manager)
       - [7. Data Compress](#7-data-compress)
     - [Yurt-iot-dock integration](#yurt-iot-dock-integration)
+      - [Challenges](#challenges)
+      - [Proposal](#proposal-1)
 
 ## Glossary
 
@@ -59,7 +63,7 @@ Non-goals are limited to the scope of this proposal. These features may evolve i
 
 1. As an end-user, I would like to send edge data to cloud through http, mqtt protocols.
 2. As an end-user, I would like to send edge files to cloud, including log files, AI training data etc.
-3. As an end-user, I dont't want to change any code to adapt edge scenario.
+3. As an end-user, I don't want to change any code to adapt edge scenario.
 
 ### Overview
 
@@ -141,7 +145,7 @@ type Tunnel interface {
     Send(id string, reader common.Reader) error
     // Start start receive
     Start(stopCh <-chan struct{}) error
-    // Register regiter a function to receive data
+    // Register register a function to receive data
     Register(handler func(id string, reader common.Reader))
 }
 
@@ -197,7 +201,7 @@ type WaveManager struct {
   compress at edge-tunnel-agent and decompress at edge-tunnel-server
 ```go
 type Compressor interface {
-    // Compress generat an Compressed package and return package key
+    // Compress generate a Compressed package and return package key
     Compress([]*common.Message) (string, error)
     // GetCompressed get compressed package Reader with giving package key
     GetCompressed(string) (common.Reader, error)

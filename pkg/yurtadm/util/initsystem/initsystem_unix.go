@@ -21,7 +21,6 @@ limitations under the License.
 package initsystem
 
 import (
-	"fmt"
 	"os/exec"
 	"strings"
 
@@ -50,6 +49,18 @@ func (openrc OpenRCInitSystem) ServiceIsActive(service string) bool {
 	outBytes, _ := exec.Command("rc-service", args...).CombinedOutput()
 	outStr := string(outBytes)
 	return !strings.Contains(outStr, "stopped") && !strings.Contains(outStr, "does not exist")
+}
+
+// ServiceStart tries to start a specific service
+func (openrc OpenRCInitSystem) ServiceStart(service string) error {
+	args := []string{service, "start"}
+	return exec.Command("rc-service", args...).Run()
+}
+
+// ServiceStop tries to stop a specific service
+func (openrc OpenRCInitSystem) ServiceStop(service string) error {
+	args := []string{service, "stop"}
+	return exec.Command("rc-service", args...).Run()
 }
 
 // SystemdInitSystem defines systemd
@@ -94,6 +105,22 @@ func (sysd SystemdInitSystem) ServiceIsActive(service string) bool {
 	return false
 }
 
+// ServiceStart tries to start a specific service
+func (sysd SystemdInitSystem) ServiceStart(service string) error {
+	// Before we try to start any service, make sure that systemd is ready
+	if err := sysd.reloadSystemd(); err != nil {
+		return err
+	}
+	args := []string{"start", service}
+	return exec.Command("systemctl", args...).Run()
+}
+
+// ServiceStop tries to stop a specific service
+func (sysd SystemdInitSystem) ServiceStop(service string) error {
+	args := []string{"stop", service}
+	return exec.Command("systemctl", args...).Run()
+}
+
 // GetInitSystem returns an InitSystem for the current system, or nil
 // if we cannot detect a supported init system.
 // This indicates we will skip init system checks, not an error.
@@ -108,5 +135,5 @@ func GetInitSystem() (InitSystem, error) {
 		return &OpenRCInitSystem{}, nil
 	}
 
-	return nil, fmt.Errorf("no supported init system detected, skipping checking for services")
+	return &EmptyInitSystem{}, nil
 }

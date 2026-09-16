@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/rand"
@@ -35,7 +36,7 @@ func newPod(now metav1.Time, ready bool, beforeSec int) *v1.Pod {
 			Conditions: []v1.PodCondition{
 				{
 					Type:               v1.PodReady,
-					LastTransitionTime: metav1.NewTime(now.Time.Add(-1 * time.Duration(beforeSec) * time.Second)),
+					LastTransitionTime: metav1.NewTime(now.Add(-1 * time.Duration(beforeSec) * time.Second)),
 					Status:             conditionStatus,
 				},
 			},
@@ -94,7 +95,7 @@ func newStaticPod(podName string, nodeName string, namespace string, isStaticPod
 
 	if isStaticPod {
 		pod.Name = podName + "-" + nodeName
-		pod.ObjectMeta.OwnerReferences = []metav1.OwnerReference{{Kind: "Node"}}
+		pod.OwnerReferences = []metav1.OwnerReference{{Kind: "Node"}}
 	} else {
 		pod.Annotations = nil
 	}
@@ -165,6 +166,52 @@ func TestUpdatePodCondition(t *testing.T) {
 			if got := UpdatePodCondition(tt.status, tt.condition); got != tt.want {
 				t.Errorf("UpdatePodCondition() = %v, want %v", got, tt.want)
 			}
+		})
+	}
+}
+
+func TestIsPodCrashLoopBackoff(t *testing.T) {
+	testCases := []struct {
+		name   string
+		status v1.PodStatus
+		expect bool
+	}{
+		{
+			name: "yes",
+			status: v1.PodStatus{
+				ContainerStatuses: []v1.ContainerStatus{
+					{
+						State: v1.ContainerState{
+							Waiting: &v1.ContainerStateWaiting{
+								Reason: "CrashLoopBackOff",
+							},
+						},
+					},
+				},
+			},
+			expect: true,
+		},
+		{
+			name: "no",
+			status: v1.PodStatus{
+				ContainerStatuses: []v1.ContainerStatus{
+					{
+						State: v1.ContainerState{},
+					},
+				},
+			},
+			expect: false,
+		},
+		{
+			name:   "empty",
+			status: v1.PodStatus{},
+			expect: false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.expect, IsPodCrashLoopBackOff(tc.status))
 		})
 	}
 }

@@ -29,7 +29,6 @@ import (
 	"time"
 
 	apps "k8s.io/api/apps/v1"
-	coordinationv1 "k8s.io/api/coordination/v1"
 	coordv1 "k8s.io/api/coordination/v1"
 	v1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
@@ -61,7 +60,6 @@ import (
 	"github.com/openyurtio/openyurt/pkg/yurtmanager/controller/nodelifecycle/scheduler"
 	"github.com/openyurtio/openyurt/pkg/yurtmanager/controller/util"
 	controllerutil "github.com/openyurtio/openyurt/pkg/yurtmanager/controller/util/node"
-	nodeutil "github.com/openyurtio/openyurt/pkg/yurtmanager/controller/util/node"
 )
 
 func init() {
@@ -215,7 +213,6 @@ type podUpdateItem struct {
 // ReconcileNodeLifeCycle is the controller that manages node's life cycle.
 type ReconcileNodeLifeCycle struct {
 	controllerRuntimeClient client.Client
-	taintManager            *scheduler.NoExecuteTaintManager
 	kubeClient              clientset.Interface
 
 	// This timestamp is to be used instead of LastProbeTime stored in Condition. We do this
@@ -283,12 +280,12 @@ type ReconcileNodeLifeCycle struct {
 	largeClusterThreshold       int32
 	unhealthyZoneThreshold      float32
 
-	nodeUpdateQueue workqueue.Interface
-	podUpdateQueue  workqueue.RateLimitingInterface
+	nodeUpdateQueue workqueue.TypedInterface[string]
+	podUpdateQueue  workqueue.TypedRateLimitingInterface[podUpdateItem]
 }
 
 // +kubebuilder:rbac:groups=core,resources=nodes/status,verbs=update
-// +kubebuilder:rbac:groups=core,resources=nodes,verbs=get
+// +kubebuilder:rbac:groups=core,resources=nodes,verbs=get;patch
 // +kubebuilder:rbac:groups=core,resources=pods/status,verbs=update
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;delete
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get
@@ -310,57 +307,24 @@ func Add(ctx context.Context, cfg *appconfig.CompletedConfig, mgr manager.Manage
 		CreateFunc: func(evt event.CreateEvent) bool {
 			pod := evt.Object.(*v1.Pod)
 			nc.podUpdated(nil, pod)
-			if nc.taintManager != nil {
-				nc.taintManager.PodUpdated(nil, pod)
-			}
 			return false
 		},
 		UpdateFunc: func(evt event.UpdateEvent) bool {
 			prevPod := evt.ObjectOld.(*v1.Pod)
 			newPod := evt.ObjectNew.(*v1.Pod)
 			nc.podUpdated(prevPod, newPod)
-			if nc.taintManager != nil {
-				nc.taintManager.PodUpdated(prevPod, newPod)
-			}
 			return false
 		},
 		DeleteFunc: func(evt event.DeleteEvent) bool {
 			pod := evt.Object.(*v1.Pod)
 			nc.podUpdated(pod, nil)
-			if nc.taintManager != nil {
-				nc.taintManager.PodUpdated(pod, nil)
-			}
 			return false
 		},
 		GenericFunc: func(evt event.GenericEvent) bool {
 			return false
 		},
 	}
-	c.Watch(source.Kind(mgr.GetCache(), &v1.Pod{}), &handler.Funcs{}, podsPredicate)
-
-	nc.taintManager = scheduler.NewNoExecuteTaintManager(nc.recorder, nc.controllerRuntimeClient, nc.getPodsAssignedToNode)
-	nodesTaintManagerPredicate := predicate.Funcs{
-		CreateFunc: func(evt event.CreateEvent) bool {
-			node := evt.Object.(*v1.Node).DeepCopy()
-			nc.taintManager.NodeUpdated(nil, node)
-			return false
-		},
-		UpdateFunc: func(evt event.UpdateEvent) bool {
-			oldNode := evt.ObjectOld.(*v1.Node).DeepCopy()
-			newNode := evt.ObjectNew.(*v1.Node).DeepCopy()
-			nc.taintManager.NodeUpdated(oldNode, newNode)
-			return false
-		},
-		DeleteFunc: func(evt event.DeleteEvent) bool {
-			node := evt.Object.(*v1.Node).DeepCopy()
-			nc.taintManager.NodeUpdated(node, nil)
-			return false
-		},
-		GenericFunc: func(evt event.GenericEvent) bool {
-			return false
-		},
-	}
-	c.Watch(source.Kind(mgr.GetCache(), &v1.Node{}), &handler.Funcs{}, nodesTaintManagerPredicate)
+	c.Watch(source.Kind[client.Object](mgr.GetCache(), &v1.Pod{}, &handler.Funcs{}, podsPredicate))
 
 	nodesUpdateQueuePredicate := predicate.Funcs{
 		CreateFunc: func(evt event.CreateEvent) bool {
@@ -382,9 +346,9 @@ func Add(ctx context.Context, cfg *appconfig.CompletedConfig, mgr manager.Manage
 			return false
 		},
 	}
-	c.Watch(source.Kind(mgr.GetCache(), &v1.Node{}), &handler.Funcs{}, nodesUpdateQueuePredicate)
-	c.Watch(source.Kind(mgr.GetCache(), &apps.DaemonSet{}), &handler.Funcs{})
-	c.Watch(source.Kind(mgr.GetCache(), &coordinationv1.Lease{}), &handler.Funcs{})
+	c.Watch(source.Kind[client.Object](mgr.GetCache(), &v1.Node{}, &handler.Funcs{}, nodesUpdateQueuePredicate))
+	c.Watch(source.Kind[client.Object](mgr.GetCache(), &apps.DaemonSet{}, &handler.Funcs{}))
+	c.Watch(source.Kind[client.Object](mgr.GetCache(), &coordv1.Lease{}, &handler.Funcs{}))
 
 	go nc.Run(ctx, c.WaitForStarted)
 	return nil
@@ -432,8 +396,12 @@ func newReconciler(cfg *appconfig.CompletedConfig, mgr manager.Manager) (*Reconc
 		secondaryEvictionLimiterQPS: cfg.ComponentConfig.NodeLifeCycleController.SecondaryNodeEvictionRate,
 		largeClusterThreshold:       cfg.ComponentConfig.NodeLifeCycleController.LargeClusterSizeThreshold,
 		unhealthyZoneThreshold:      cfg.ComponentConfig.NodeLifeCycleController.UnhealthyZoneThreshold,
-		nodeUpdateQueue:             workqueue.NewNamed("node_lifecycle_controller"),
-		podUpdateQueue:              workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "node_lifecycle_controller_pods"),
+		nodeUpdateQueue:             workqueue.NewTypedWithConfig(workqueue.TypedQueueConfig[string]{Name: "node_lifecycle_controller"}),
+		podUpdateQueue: workqueue.NewTypedRateLimitingQueueWithConfig(
+			workqueue.DefaultTypedControllerRateLimiter[podUpdateItem](),
+			workqueue.TypedRateLimitingQueueConfig[podUpdateItem]{
+				Name: "node_lifecycle_controller_pods",
+			}),
 	}
 	nc.getPodsAssignedToNode = GenGetPodsAssignedToNode(nc.controllerRuntimeClient)
 	nc.enterPartialDisruptionFunc = nc.ReducedQPSFunc
@@ -462,8 +430,6 @@ func (nc *ReconcileNodeLifeCycle) Run(ctx context.Context, waitForControllerStar
 	if !waitForControllerStarted(ctx) {
 		return
 	}
-
-	go nc.taintManager.Run(ctx)
 
 	// Start workers to reconcile labels and/or update NoSchedule taint for nodes.
 	for i := 0; i < scheduler.UpdateWorkerSize; i++ {
@@ -500,7 +466,7 @@ func (nc *ReconcileNodeLifeCycle) doNodeProcessingPassWorker(ctx context.Context
 		if shutdown {
 			return
 		}
-		nodeName := obj.(string)
+		nodeName := obj
 		if err := nc.doNoScheduleTaintingPass(ctx, nodeName); err != nil {
 			klog.ErrorS(err, "could not taint NoSchedule on node, requeue it", "node", klog.KRef("", nodeName))
 			// TODO(k82cn): Add nodeName back to the queue
@@ -575,7 +541,7 @@ func (nc *ReconcileNodeLifeCycle) doNoScheduleTaintingPass(ctx context.Context, 
 func (nc *ReconcileNodeLifeCycle) doNoExecuteTaintingPass(ctx context.Context) {
 	// Extract out the keys of the map in order to not hold
 	// the evictorLock for the entire function and hold it
-	// only when nescessary.
+	// only when necessary.
 	var zoneNoExecuteTainterKeys []string
 	func() {
 		nc.evictorLock.Lock()
@@ -657,7 +623,7 @@ func (nc *ReconcileNodeLifeCycle) monitorNodeHealth(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	nodes := make([]*v1.Node, len(nodeList.Items), len(nodeList.Items))
+	nodes := make([]*v1.Node, len(nodeList.Items))
 	for i := range nodeList.Items {
 		nodes[i] = &nodeList.Items[i]
 	}
@@ -740,7 +706,7 @@ func (nc *ReconcileNodeLifeCycle) monitorNodeHealth(ctx context.Context) error {
 				fallthrough
 			case needsRetry && observedReadyCondition.Status != v1.ConditionTrue:
 				// Ignore mark the pods NotReady if the node has bounded to node.
-				if nodeutil.IsPodBoundenToNode(node) {
+				if controllerutil.IsPodBoundenToNode(node) {
 					return
 				}
 
@@ -917,9 +883,9 @@ func (nc *ReconcileNodeLifeCycle) tryUpdateNodeHealth(ctx context.Context, node 
 	// heartbeat leases, the node controller will assume the node is healthy and
 	// take no action.
 	//observedLease, _ := nc.leaseLister.Leases(v1.NamespaceNodeLease).Get(node.Name)
-	observedLease := new(coordinationv1.Lease)
+	observedLease := new(coordv1.Lease)
 	err := nc.controllerRuntimeClient.Get(ctx, types.NamespacedName{Namespace: v1.NamespaceNodeLease, Name: node.Name}, observedLease)
-	if err == nil && observedLease != nil && (savedLease == nil || savedLease.Spec.RenewTime.Before(observedLease.Spec.RenewTime)) {
+	if err == nil && (savedLease == nil || savedLease.Spec.RenewTime.Before(observedLease.Spec.RenewTime)) {
 		nodeHealth.lease = observedLease
 		nodeHealth.probeTimestamp = nc.now()
 	}
@@ -952,7 +918,7 @@ func (nc *ReconcileNodeLifeCycle) tryUpdateNodeHealth(ctx context.Context, node 
 				})
 			} else {
 				klog.V(2).InfoS("Node hasn't been updated",
-					"node", klog.KObj(node), "duration", nc.now().Time.Sub(nodeHealth.probeTimestamp.Time), "nodeConditionType", nodeConditionType, "currentCondition", currentCondition)
+					"node", klog.KObj(node), "duration", nc.now().Sub(nodeHealth.probeTimestamp.Time), "nodeConditionType", nodeConditionType, "currentCondition", currentCondition)
 				if currentCondition.Status != v1.ConditionUnknown {
 					currentCondition.Status = v1.ConditionUnknown
 					currentCondition.Reason = "NodeStatusUnknown"
@@ -1092,7 +1058,7 @@ func (nc *ReconcileNodeLifeCycle) doPodProcessingWorker(ctx context.Context) {
 			return
 		}
 
-		podItem := obj.(podUpdateItem)
+		podItem := obj
 		nc.processPod(ctx, podItem)
 	}
 }
@@ -1134,7 +1100,7 @@ func (nc *ReconcileNodeLifeCycle) processPod(ctx context.Context, podItem podUpd
 	}
 
 	// Ignore mark the pods NotReady if the node has bounded to node.
-	if nodeutil.IsPodBoundenToNode(node) {
+	if controllerutil.IsPodBoundenToNode(node) {
 		return
 	}
 

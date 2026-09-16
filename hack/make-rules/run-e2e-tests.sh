@@ -49,7 +49,7 @@ function cleanup {
 
 # install gingko
 function get_ginkgo() {
-    go install github.com/onsi/ginkgo/v2/ginkgo@v2.1.4
+    go install github.com/onsi/ginkgo/v2/ginkgo@v2.22.2
 }
 
 function build_e2e_binary() {
@@ -67,8 +67,8 @@ function build_e2e_binary() {
       fi
     done
 
-    ginkgo build $YURT_ROOT/test/e2e \
-    --gcflags "${gcflags:-}" ${goflags} --ldflags "${goldflags}"
+    ginkgo build --gcflags "${gcflags:-}" --ldflags "${goldflags}" $YURT_ROOT/test/e2e
+
 }
 
 # run e2e tests

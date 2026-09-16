@@ -22,18 +22,23 @@ import (
 	"k8s.io/kube-controller-manager/config/v1alpha1"
 
 	csrapproverconfig "github.com/openyurtio/openyurt/pkg/yurtmanager/controller/csrapprover/config"
-	daemonpodupdaterconfig "github.com/openyurtio/openyurt/pkg/yurtmanager/controller/daemonpodupdater/config"
+	daemonpodupdaterconfig "github.com/openyurtio/openyurt/pkg/yurtmanager/controller/daemonsetupgradestrategy/daemonpodupdater/config"
+	hubleaderconfig "github.com/openyurtio/openyurt/pkg/yurtmanager/controller/hubleader/config"
+	hubleadercfgconfig "github.com/openyurtio/openyurt/pkg/yurtmanager/controller/hubleaderconfig/config"
+	hubleaderrbacconfig "github.com/openyurtio/openyurt/pkg/yurtmanager/controller/hubleaderrbac/config"
 	loadbalancersetconfig "github.com/openyurtio/openyurt/pkg/yurtmanager/controller/loadbalancerset/loadbalancerset/config"
 	nodebucketconfig "github.com/openyurtio/openyurt/pkg/yurtmanager/controller/nodebucket/config"
 	nodepoolconfig "github.com/openyurtio/openyurt/pkg/yurtmanager/controller/nodepool/config"
 	platformadminconfig "github.com/openyurtio/openyurt/pkg/yurtmanager/controller/platformadmin/config"
+	gatewaydnsconfig "github.com/openyurtio/openyurt/pkg/yurtmanager/controller/raven/dns/config"
+	gatewayinternalsvcconfig "github.com/openyurtio/openyurt/pkg/yurtmanager/controller/raven/gatewayinternalservice/config"
 	gatewaypickupconfig "github.com/openyurtio/openyurt/pkg/yurtmanager/controller/raven/gatewaypickup/config"
+	gatewaypublicsvcconfig "github.com/openyurtio/openyurt/pkg/yurtmanager/controller/raven/gatewaypublicservice/config"
 	endpointsconfig "github.com/openyurtio/openyurt/pkg/yurtmanager/controller/servicetopology/endpoints/config"
-	yurtappdaemonconfig "github.com/openyurtio/openyurt/pkg/yurtmanager/controller/yurtappdaemon/config"
-	yurtappoverriderconfig "github.com/openyurtio/openyurt/pkg/yurtmanager/controller/yurtappoverrider/config"
+	endpointsliceconfig "github.com/openyurtio/openyurt/pkg/yurtmanager/controller/servicetopology/endpointslice/config"
 	yurtappsetconfig "github.com/openyurtio/openyurt/pkg/yurtmanager/controller/yurtappset/config"
-	delegateleaseconfig "github.com/openyurtio/openyurt/pkg/yurtmanager/controller/yurtcoordinator/delegatelease/config"
 	podbindingconfig "github.com/openyurtio/openyurt/pkg/yurtmanager/controller/yurtcoordinator/podbinding/config"
+	yurtnodeconversionconfig "github.com/openyurtio/openyurt/pkg/yurtmanager/controller/yurtnodeconversion/config"
 	yurtstaticsetconfig "github.com/openyurtio/openyurt/pkg/yurtmanager/controller/yurtstaticset/config"
 )
 
@@ -41,9 +46,6 @@ import (
 type YurtManagerConfiguration struct {
 	metav1.TypeMeta
 	Generic GenericConfiguration
-
-	// DelegateLeaseControllerConfiguration holds configuration for DelegateLeaseController related features.
-	DelegateLeaseController delegateleaseconfig.DelegateLeaseControllerConfiguration
 
 	// PodBindingControllerConfiguration holds configuration for PodBindingController related features.
 	PodBindingController podbindingconfig.PodBindingControllerConfiguration
@@ -57,34 +59,53 @@ type YurtManagerConfiguration struct {
 	// NodePoolControllerConfiguration holds configuration for NodePoolController related features.
 	NodePoolController nodepoolconfig.NodePoolControllerConfiguration
 
-	// GatewayPickupControllerConfiguration holds configuration for GatewayController related features.
-	GatewayPickupController gatewaypickupconfig.GatewayPickupControllerConfiguration
-
 	// YurtAppSetControllerConfiguration holds configuration for YurtAppSetController related features.
 	YurtAppSetController yurtappsetconfig.YurtAppSetControllerConfiguration
 
 	// YurtStaticSetControllerConfiguration holds configuration for YurtStaticSetController related features.
 	YurtStaticSetController yurtstaticsetconfig.YurtStaticSetControllerConfiguration
 
-	// YurtAppDaemonControllerConfiguration holds configuration for YurtAppDaemonController related features.
-	YurtAppDaemonController yurtappdaemonconfig.YurtAppDaemonControllerConfiguration
+	// YurtNodeConversionControllerConfiguration holds configuration for YurtNodeConversionController related features.
+	YurtNodeConversionController yurtnodeconversionconfig.YurtNodeConversionControllerConfiguration
 
 	// PlatformAdminControllerConfiguration holds configuration for PlatformAdminController related features.
 	PlatformAdminController platformadminconfig.PlatformAdminControllerConfiguration
 
-	// YurtAppOverriderControllerConfiguration holds configuration for YurtAppOverriderController related features.
-	YurtAppOverriderController yurtappoverriderconfig.YurtAppOverriderControllerConfiguration
-
+	// NodeLifeCycleControllerConfiguration holds configuration for NodeLifeCycleController related features.
 	NodeLifeCycleController v1alpha1.NodeLifecycleControllerConfiguration
 
-	//  NodeBucketController holds configuration for NodeBucketController related features.
+	// NodeBucketController holds configuration for NodeBucketController related features.
 	NodeBucketController nodebucketconfig.NodeBucketControllerConfiguration
 
-	// EndPointsController holds configuration for EndPointsController related features.
-	ServiceTopologyEndpointsController endpointsconfig.ServiceTopologyEndPointsControllerConfiguration
+	// EndpointsController holds configuration for EndpointsController related features.
+	ServiceTopologyEndpointsController endpointsconfig.ServiceTopologyEndpointsControllerConfiguration
 
-	//  LoadBalancerSetController holds configuration for LoadBalancerSetController related features.
+	// EndpointSliceController holds configuration for EndpointSliceController related features.
+	ServiceTopologyEndpointSliceController endpointsliceconfig.ServiceTopologyEndpointSliceControllerConfiguration
+
+	// LoadBalancerSetController holds configuration for LoadBalancerSetController related features.
 	LoadBalancerSetController loadbalancersetconfig.LoadBalancerSetControllerConfiguration
+
+	// GatewayPickupControllerConfiguration holds configuration for GatewayController related features.
+	GatewayPickupController gatewaypickupconfig.GatewayPickupControllerConfiguration
+
+	// GatewayDNSController holds configuration for GatewayDNSController related features.
+	GatewayDNSController gatewaydnsconfig.GatewayDNSControllerConfiguration
+
+	// GatewayInternalSvcController holds configuration for GatewayInternalSvcController related features.
+	GatewayInternalSvcController gatewayinternalsvcconfig.GatewayInternalSvcControllerConfiguration
+
+	// GatewayPublicSvcController holds configuration for GatewayPublicSvcController related features.
+	GatewayPublicSvcController gatewaypublicsvcconfig.GatewayPublicSvcControllerConfiguration
+
+	// HubLeaderController holds configuration for HubLeaderController related features.
+	HubLeaderController hubleaderconfig.HubLeaderControllerConfiguration
+
+	// HubLeaderConfigController holds configuration for HubLeaderController related features.
+	HubLeaderConfigController hubleadercfgconfig.HubLeaderConfigControllerConfiguration
+
+	// HubLeaderRBACController holds configuration for HubLeaderRBAC related features.
+	HubLeaderRBACController hubleaderrbacconfig.HubLeaderRBACControllerConfiguration
 }
 
 type GenericConfiguration struct {
@@ -96,7 +117,6 @@ type GenericConfiguration struct {
 	RestConfigQPS    int
 	RestConfigBurst  int
 	WorkingNamespace string
-	Kubeconfig       string
 	// Controllers is the list of controllers to enable or disable
 	// '*' means "all enabled by default controllers"
 	// 'foo' means "enable 'foo'"

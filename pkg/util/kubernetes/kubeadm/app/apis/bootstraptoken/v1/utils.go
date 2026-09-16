@@ -43,7 +43,7 @@ func (bts *BootstrapTokenString) UnmarshalJSON(b []byte) error {
 	}
 
 	// Remove unnecessary " characters coming from the JSON parser
-	token := strings.Replace(string(b), `"`, ``, -1)
+	token := strings.ReplaceAll(string(b), `"`, ``)
 	// Convert the string Token to a BootstrapTokenString object
 	newbts, err := NewBootstrapTokenString(token)
 	if err != nil {
@@ -68,7 +68,7 @@ func (bts BootstrapTokenString) String() string {
 // is of the right format
 func NewBootstrapTokenString(token string) (*BootstrapTokenString, error) {
 	substrs := bootstraputil.BootstrapTokenRegexp.FindStringSubmatch(token)
-	// TODO: Add a constant for the 3 value here, and explain better why it's needed (other than because how the regexp parsin works)
+	// TODO: Add a constant for the 3 value here, and explain better why it's needed (other than because how the regexp parsing works)
 	if len(substrs) != 3 {
 		return nil, errors.Errorf("the bootstrap token %q was not of the form %q", token, bootstrapapi.BootstrapTokenPattern)
 	}

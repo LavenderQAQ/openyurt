@@ -17,45 +17,63 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"strings"
+
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/conversion"
 
-	"github.com/openyurtio/openyurt/pkg/apis/apps/v1beta1"
+	"github.com/openyurtio/openyurt/pkg/apis/apps"
+	"github.com/openyurtio/openyurt/pkg/apis/apps/v1beta2"
 )
 
 func (src *NodePool) ConvertTo(dstRaw conversion.Hub) error {
-	dst := dstRaw.(*v1beta1.NodePool)
+	dst := dstRaw.(*v1beta2.NodePool)
 
 	dst.ObjectMeta = src.ObjectMeta
 
-	dst.Spec.Type = v1beta1.NodePoolType(src.Spec.Type)
+	dst.Spec.Type = v1beta2.NodePoolType(src.Spec.Type)
 	dst.Spec.Labels = src.Spec.Labels
 	dst.Spec.Annotations = src.Spec.Annotations
 	dst.Spec.Taints = src.Spec.Taints
+	if strings.EqualFold(src.Annotations[apps.NodePoolHostNetworkLabel], "true") {
+		dst.Spec.HostNetwork = true
+	}
 
 	dst.Status.ReadyNodeNum = src.Status.ReadyNodeNum
 	dst.Status.UnreadyNodeNum = src.Status.UnreadyNodeNum
 	dst.Status.Nodes = src.Status.Nodes
+
+	// Set interconnectivity to false which will not use leader election strategy or reuse list/watch events
+	dst.Spec.InterConnectivity = false
+	dst.Spec.LeaderElectionStrategy = string(v1beta2.ElectionStrategyRandom)
+	dst.Spec.LeaderReplicas = 1
 
 	klog.V(4).Infof("convert from v1alpha1 to v1beta1 for nodepool %s", dst.Name)
 
 	return nil
 }
 
-func (dst *NodePool) ConvertFrom(srcRaw conversion.Hub) error {
-	src := srcRaw.(*v1beta1.NodePool)
+func (src *NodePool) ConvertFrom(srcRaw conversion.Hub) error {
+	srcRawV1beta2 := srcRaw.(*v1beta2.NodePool)
 
-	dst.ObjectMeta = src.ObjectMeta
+	src.ObjectMeta = srcRawV1beta2.ObjectMeta
 
-	dst.Spec.Type = NodePoolType(src.Spec.Type)
-	dst.Spec.Labels = src.Spec.Labels
-	dst.Spec.Annotations = src.Spec.Annotations
-	dst.Spec.Taints = src.Spec.Taints
+	src.Spec.Type = NodePoolType(srcRawV1beta2.Spec.Type)
+	src.Spec.Labels = srcRawV1beta2.Spec.Labels
+	src.Spec.Annotations = srcRawV1beta2.Spec.Annotations
+	src.Spec.Taints = srcRawV1beta2.Spec.Taints
 
-	dst.Status.ReadyNodeNum = src.Status.ReadyNodeNum
-	dst.Status.UnreadyNodeNum = src.Status.UnreadyNodeNum
-	dst.Status.Nodes = src.Status.Nodes
+	src.Status.ReadyNodeNum = srcRawV1beta2.Status.ReadyNodeNum
+	src.Status.UnreadyNodeNum = srcRawV1beta2.Status.UnreadyNodeNum
+	src.Status.Nodes = srcRawV1beta2.Status.Nodes
 
-	klog.V(4).Infof("convert from v1beta1 to v1alpha1 for nodepool %s", dst.Name)
+	if srcRawV1beta2.Spec.HostNetwork {
+		if src.Annotations == nil {
+			src.Annotations = make(map[string]string)
+		}
+		src.Annotations[apps.NodePoolHostNetworkLabel] = "true"
+	}
+
+	klog.V(4).Infof("convert from v1beta1 to v1alpha1 for nodepool %s", src.Name)
 	return nil
 }

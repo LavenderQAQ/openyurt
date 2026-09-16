@@ -22,9 +22,9 @@ import (
 
 	"k8s.io/klog/v2"
 
+	"github.com/openyurtio/openyurt/pkg/projectinfo"
 	"github.com/openyurtio/openyurt/pkg/yurtadm/cmd/join/joindata"
 	"github.com/openyurtio/openyurt/pkg/yurtadm/constants"
-	"github.com/openyurtio/openyurt/pkg/yurtadm/util/edgenode"
 	yurtadmutil "github.com/openyurtio/openyurt/pkg/yurtadm/util/kubernetes"
 	"github.com/openyurtio/openyurt/pkg/yurtadm/util/system"
 	"github.com/openyurtio/openyurt/pkg/yurtadm/util/yurthub"
@@ -33,9 +33,11 @@ import (
 // RunPrepare executes the node initialization process.
 func RunPrepare(data joindata.YurtJoinData) error {
 	// cleanup at first
-	staticPodsPath := filepath.Join(constants.KubeletConfigureDir, constants.ManifestsSubDirName)
-	if err := os.RemoveAll(staticPodsPath); err != nil {
-		klog.Warningf("remove %s: %v", staticPodsPath, err)
+	if data.NodeRegistration().WorkingMode != constants.LocalNode {
+		staticPodsPath := filepath.Join(constants.KubeletConfigureDir, constants.ManifestsSubDirName)
+		if err := os.RemoveAll(staticPodsPath); err != nil {
+			klog.Warningf("remove %s: %v", staticPodsPath, err)
+		}
 	}
 
 	if err := system.SetIpv4Forward(); err != nil {
@@ -53,8 +55,10 @@ func RunPrepare(data joindata.YurtJoinData) error {
 	if err := yurtadmutil.CheckAndInstallKubeadm(data.KubernetesResourceServer(), data.KubernetesVersion()); err != nil {
 		return err
 	}
-	if err := yurtadmutil.CheckAndInstallKubernetesCni(data.ReuseCNIBin()); err != nil {
-		return err
+	if data.NodeRegistration().WorkingMode != constants.LocalNode {
+		if err := yurtadmutil.CheckAndInstallKubernetesCni(data.ReuseCNIBin()); err != nil {
+			return err
+		}
 	}
 	if err := yurtadmutil.SetKubeletService(); err != nil {
 		return err
@@ -62,26 +66,19 @@ func RunPrepare(data joindata.YurtJoinData) error {
 	if err := yurtadmutil.EnableKubeletService(); err != nil {
 		return err
 	}
-	if err := yurtadmutil.SetKubeletUnitConfig(); err != nil {
+	if err := yurtadmutil.SetKubeletUnitConfig(data); err != nil {
 		return err
 	}
-	if err := yurtadmutil.SetKubeletConfigForNode(); err != nil {
-		return err
-	}
-	if err := yurthub.SetHubBootstrapConfig(data.ServerAddr(), data.JoinToken(), data.CaCertHashes()); err != nil {
-		return err
-	}
-	if err := yurthub.AddYurthubStaticYaml(data, constants.StaticPodPath); err != nil {
-		return err
-	}
-	if len(data.StaticPodTemplateList()) != 0 {
-		// deploy user specified static pods
-		if err := edgenode.DeployStaticYaml(data.StaticPodManifestList(), data.StaticPodTemplateList(), constants.StaticPodPath); err != nil {
+
+	if data.NodeRegistration().WorkingMode != constants.LocalNode {
+		// All non-local nodes: install yurthub binary
+		if err := yurthub.CheckAndInstallYurthub(projectinfo.Get().GitVersion); err != nil {
 			return err
 		}
-	}
-	if err := yurtadmutil.SetDiscoveryConfig(data); err != nil {
-		return err
+
+		if err := yurtadmutil.SetDiscoveryConfig(data); err != nil {
+			return err
+		}
 	}
 	if data.CfgPath() == "" {
 		if err := yurtadmutil.SetKubeadmJoinConfig(data); err != nil {

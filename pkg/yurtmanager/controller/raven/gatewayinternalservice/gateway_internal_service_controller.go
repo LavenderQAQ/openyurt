@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+//nolint:staticcheck // SA1019: corev1.Endpoints is deprecated but still supported for backward compatibility
 package gatewayinternalservice
 
 import (
@@ -62,7 +63,7 @@ func Format(format string, args ...interface{}) string {
 // Add creates a new Service Controller and adds it to the Manager with default RBAC. The Manager will set fields on the Controller
 // and Start it when the Manager is Started.
 func Add(ctx context.Context, c *appconfig.CompletedConfig, mgr manager.Manager) error {
-	return add(mgr, newReconciler(c, mgr))
+	return add(mgr, c, newReconciler(c, mgr))
 }
 
 var _ reconcile.Reconciler = &ReconcileService{}
@@ -75,7 +76,7 @@ type ReconcileService struct {
 }
 
 // newReconciler returns a new reconcile.Reconciler
-func newReconciler(c *appconfig.CompletedConfig, mgr manager.Manager) reconcile.Reconciler {
+func newReconciler(_ *appconfig.CompletedConfig, mgr manager.Manager) reconcile.Reconciler {
 	return &ReconcileService{
 		Client:   yurtClient.GetClientByControllerNameOrDie(mgr, names.GatewayInternalServiceController),
 		scheme:   mgr.GetScheme(),
@@ -84,23 +85,23 @@ func newReconciler(c *appconfig.CompletedConfig, mgr manager.Manager) reconcile.
 }
 
 // add adds a new Controller to mgr with r as the reconcile.Reconciler
-func add(mgr manager.Manager, r reconcile.Reconciler) error {
+func add(mgr manager.Manager, cfg *appconfig.CompletedConfig, r reconcile.Reconciler) error {
 	// Create a new controller
 	c, err := controller.New(names.GatewayInternalServiceController, mgr, controller.Options{
-		Reconciler: r, MaxConcurrentReconciles: util.ConcurrentReconciles,
+		Reconciler: r, MaxConcurrentReconciles: int(cfg.ComponentConfig.GatewayInternalSvcController.ConcurrentGatewayInternalSvcWorkers),
 	})
 	if err != nil {
 		return err
 	}
 
 	// Watch for changes to Gateway
-	err = c.Watch(source.Kind(mgr.GetCache(), &ravenv1beta1.Gateway{}), &EnqueueRequestForGatewayEvent{})
+	err = c.Watch(source.Kind[client.Object](mgr.GetCache(), &ravenv1beta1.Gateway{}, &EnqueueRequestForGatewayEvent{}))
 	if err != nil {
 		return err
 	}
 
 	//Watch for changes to raven agent
-	err = c.Watch(source.Kind(mgr.GetCache(), &corev1.ConfigMap{}), &EnqueueRequestForConfigEvent{}, predicate.NewPredicateFuncs(
+	err = c.Watch(source.Kind[client.Object](mgr.GetCache(), &corev1.ConfigMap{}, &EnqueueRequestForConfigEvent{}, predicate.NewPredicateFuncs(
 		func(object client.Object) bool {
 			cm, ok := object.(*corev1.ConfigMap)
 			if !ok {
@@ -114,7 +115,7 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 			}
 			return true
 		},
-	))
+	)))
 	if err != nil {
 		return err
 	}
@@ -138,13 +139,13 @@ func (r *ReconcileService) Reconcile(ctx context.Context, req reconcile.Request)
 
 	enableProxy, _ := util.CheckServer(ctx, r.Client)
 	if err = r.reconcileService(ctx, req, gwList, enableProxy); err != nil {
-		err = fmt.Errorf(Format("unable to reconcile service: %s", err))
+		err = fmt.Errorf("unable to reconcile service: %s", err)
 		klog.Errorln(err.Error())
 		return reconcile.Result{}, err
 	}
 
 	if err = r.reconcileEndpoint(ctx, req, gwList, enableProxy); err != nil {
-		err = fmt.Errorf(Format("unable to reconcile endpoint: %s", err))
+		err = fmt.Errorf("unable to reconcile endpoint: %s", err)
 		klog.Errorln(err.Error())
 		return reconcile.Result{}, err
 	}
@@ -154,7 +155,7 @@ func (r *ReconcileService) Reconcile(ctx context.Context, req reconcile.Request)
 func (r *ReconcileService) listExposedGateway(ctx context.Context) ([]*ravenv1beta1.Gateway, error) {
 	var gatewayList ravenv1beta1.GatewayList
 	if err := r.List(ctx, &gatewayList); err != nil {
-		return nil, fmt.Errorf(Format("unable to list gateways: %s", err))
+		return nil, fmt.Errorf("unable to list gateways: %s", err)
 	}
 	exposedGateways := make([]*ravenv1beta1.Gateway, 0)
 	for _, gw := range gatewayList.Items {
@@ -333,7 +334,6 @@ func generateEndpoint(req ctrl.Request) corev1.Endpoints {
 }
 
 func (r *ReconcileService) updateEndpoint(ctx context.Context, req ctrl.Request, service *corev1.Service, gatewayList []*ravenv1beta1.Gateway) error {
-
 	subsets := []corev1.EndpointSubset{
 		{
 			Addresses: r.ensureSpecEndpoints(ctx, gatewayList),

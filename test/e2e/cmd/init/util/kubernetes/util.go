@@ -45,20 +45,24 @@ import (
 
 const (
 	SystemNamespace = "kube-system"
-	// DefaultWaitServantJobTimeout specifies the timeout value of waiting for the ServantJob to be succeeded
-	DefaultWaitServantJobTimeout = time.Minute * 5
+	// DefaultWaitNodeConversionTimeout specifies the timeout value of waiting for node conversion to settle.
+	DefaultWaitNodeConversionTimeout = time.Minute * 5
 )
 
 var (
 	// PropagationPolicy defines the propagation policy used when deleting a resource
 	PropagationPolicy = metav1.DeletePropagationBackground
-	// CheckServantJobPeriod defines the time interval between two successive ServantJob statu's inspection
+	// CheckServantJobPeriod defines the time interval between two successive ServantJob status inspection
 	CheckServantJobPeriod = time.Second * 10
 )
 
-func AddEdgeWorkerLabelAndAutonomyAnnotation(cliSet kubeclientset.Interface, node *corev1.Node, lVal, aVal string) (*corev1.Node, error) {
+func AddEdgeWorkerLabelAndAutonomyAnnotation(
+	cliSet kubeclientset.Interface,
+	node *corev1.Node,
+	lVal, aVal string,
+) (*corev1.Node, error) {
 	node.Labels[projectinfo.GetEdgeWorkerLabelKey()] = lVal
-	node.Annotations[projectinfo.GetAutonomyAnnotation()] = aVal
+	node.Annotations[projectinfo.GetNodeAutonomyDurationAnnotation()] = aVal
 	newNode, err := cliSet.CoreV1().Nodes().Update(context.Background(), node, metav1.UpdateOptions{})
 	if err != nil {
 		return nil, err
@@ -86,7 +90,9 @@ func RunJobAndCleanup(cliSet kubeclientset.Interface, job *batchv1.Job, timeout,
 
 func jobIsCompleted(clientset kubeclientset.Interface, job *batchv1.Job) wait.ConditionWithContextFunc {
 	return func(ctx context.Context) (bool, error) {
-		newJob, err := clientset.BatchV1().Jobs(job.GetNamespace()).Get(context.Background(), job.GetName(), metav1.GetOptions{})
+		newJob, err := clientset.BatchV1().
+			Jobs(job.GetNamespace()).
+			Get(context.Background(), job.GetName(), metav1.GetOptions{})
 		if err != nil {
 			if apierrors.IsNotFound(err) {
 				return false, err
@@ -108,16 +114,15 @@ func DumpPod(client kubeclientset.Interface, pod *corev1.Pod, w io.Writer) error
 	klog.Infof("dump pod(%s/%s) info:", pod.Namespace, pod.Name)
 	url := client.CoreV1().RESTClient().Get().Resource("pods").Namespace(pod.Namespace).Name(pod.Name).URL()
 	podRequest := client.CoreV1().RESTClient().Get().AbsPath(url.Path)
-	if err := kubectllogs.DefaultConsumeRequest(podRequest, w); err != nil {
+	if err := kubectllogs.DefaultConsumeRequest(context.TODO(), podRequest, w); err != nil {
 		klog.Errorf("failed to print pod(%s/%s) info, %v", pod.Namespace, pod.Name, err)
 		return err
 	}
 
 	klog.Infof("start to print logs for pod(%s/%s):", pod.Namespace, pod.Name)
 	req := client.CoreV1().Pods(pod.GetNamespace()).GetLogs(pod.Name, &corev1.PodLogOptions{})
-	if err := kubectllogs.DefaultConsumeRequest(req, w); err != nil {
+	if err := kubectllogs.DefaultConsumeRequest(context.TODO(), req, w); err != nil {
 		klog.Errorf("failed to print logs for pod(%s/%s), %v", pod.Namespace, pod.Name, err)
-		return err
 	}
 
 	klog.Infof("start to print events for pod(%s/%s):", pod.Namespace, pod.Name)
@@ -131,7 +136,15 @@ func DumpPod(client kubeclientset.Interface, pod *corev1.Pod, w io.Writer) error
 	}
 
 	for _, event := range eventList.Items {
-		klog.Infof("Pod(%s/%s) Event: %v, Type: %v, Reason: %v, Message: %v", pod.Namespace, pod.Name, event.Name, event.Type, event.Reason, event.Message)
+		klog.Infof(
+			"Pod(%s/%s) Event: %v, Type: %v, Reason: %v, Message: %v",
+			pod.Namespace,
+			pod.Name,
+			event.Name,
+			event.Type,
+			event.Reason,
+			event.Message,
+		)
 	}
 
 	return nil
@@ -258,5 +271,6 @@ func usagesAndGroupsAreValid(token *bootstraptokenv1.BootstrapToken) bool {
 		return true
 	}
 
-	return sliceEqual(token.Usages, kubeadmconstants.DefaultTokenUsages) && sliceEqual(token.Groups, kubeadmconstants.DefaultTokenGroups)
+	return sliceEqual(token.Usages, kubeadmconstants.DefaultTokenUsages) &&
+		sliceEqual(token.Groups, kubeadmconstants.DefaultTokenGroups)
 }

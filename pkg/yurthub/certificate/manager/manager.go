@@ -41,9 +41,9 @@ const (
 )
 
 var (
-	serverCertNotReadyError          = errors.New("hub server certificate")
-	apiServerClientCertNotReadyError = errors.New("APIServer client certificate")
-	caCertIsNotReadyError            = errors.New("ca.crt file")
+	errServerCertNotReady          = errors.New("hub server certificate")
+	errAPIServerClientCertNotReady = errors.New("APIServer client certificate")
+	errCaCertIsNotReady            = errors.New("ca.crt file")
 
 	DefaultWorkDir = filepath.Join("/var/lib", projectinfo.GetHubName())
 )
@@ -92,6 +92,7 @@ func NewYurtHubCertManager(options *options.YurtHubOptions, remoteServers []*url
 		net.ParseIP(options.HubAgentDummyIfIP),
 		net.ParseIP(options.YurtHubHost),
 		net.ParseIP(options.YurtHubProxyHost),
+		net.ParseIP(options.NodeIP),
 	})
 	serverCertManager, err := hubServerCert.NewHubServerCertificateManager(options.ClientForTest, clientCertManager, options.NodeName, filepath.Join(workDir, "pki"), certIPs)
 	if err != nil {
@@ -119,15 +120,15 @@ func (hcm *yurtHubCertManager) Stop() {
 func (hcm *yurtHubCertManager) Ready() bool {
 	var errs []error
 	if hcm.GetAPIServerClientCert() == nil {
-		errs = append(errs, apiServerClientCertNotReadyError)
+		errs = append(errs, errAPIServerClientCertNotReady)
 	}
 
-	if len(hcm.YurtClientCertificateManager.GetCAData()) == 0 {
-		errs = append(errs, caCertIsNotReadyError)
+	if len(hcm.GetCAData()) == 0 {
+		errs = append(errs, errCaCertIsNotReady)
 	}
 
 	if hcm.GetHubServerCert() == nil {
-		errs = append(errs, serverCertNotReadyError)
+		errs = append(errs, errServerCertNotReady)
 	}
 
 	if len(errs) != 0 {

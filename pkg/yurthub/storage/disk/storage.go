@@ -43,10 +43,10 @@ const (
 	tmpPrefix    = "tmp_"
 )
 
-// TODO: lock should block, and also add comment about it
-// TODO: should optimize the efficiency of the lock mechanism
+// diskStorage implements a key-level blocking lock mechanism to prevent concurrent access conflicts.
 type diskStorage struct {
 	sync.Mutex
+	cond             *sync.Cond
 	baseDir          string
 	keyPendingStatus map[string]struct{}
 	serializer       runtime.Serializer
@@ -76,6 +76,7 @@ func NewDiskStorage(dir string) (storage.Store, error) {
 		serializer:       json.NewSerializerWithOptions(json.DefaultMetaFactory, scheme.Scheme, scheme.Scheme, json.SerializerOptions{}),
 		fsOperator:       fsOperator,
 	}
+	ds.cond = sync.NewCond(&ds.Mutex)
 
 	enhancementMode, err := ifEnhancement(ds.baseDir, *ds.fsOperator)
 	if err != nil {
@@ -113,9 +114,7 @@ func (ds *diskStorage) Create(key storage.Key, content []byte) error {
 		return storage.ErrKeyHasNoContent
 	}
 
-	if !ds.lockKey(storageKey) {
-		return storage.ErrStorageAccessConflict
-	}
+	ds.lockKey(storageKey)
 	defer ds.unLockKey(storageKey)
 
 	path := filepath.Join(ds.baseDir, storageKey.Key())
@@ -140,9 +139,7 @@ func (ds *diskStorage) Delete(key storage.Key) error {
 	}
 	storageKey := key.(storageKey)
 
-	if !ds.lockKey(storageKey) {
-		return storage.ErrStorageAccessConflict
-	}
+	ds.lockKey(storageKey)
 	defer ds.unLockKey(storageKey)
 
 	path := filepath.Join(ds.baseDir, storageKey.Key())
@@ -165,9 +162,7 @@ func (ds *diskStorage) Get(key storage.Key) ([]byte, error) {
 	}
 	storageKey := key.(storageKey)
 
-	if !ds.lockKey(storageKey) {
-		return nil, storage.ErrStorageAccessConflict
-	}
+	ds.lockKey(storageKey)
 	defer ds.unLockKey(storageKey)
 
 	path := filepath.Join(ds.baseDir, storageKey.Key())
@@ -192,9 +187,7 @@ func (ds *diskStorage) List(key storage.Key) ([][]byte, error) {
 	}
 	storageKey := key.(storageKey)
 
-	if !ds.lockKey(storageKey) {
-		return nil, storage.ErrStorageAccessConflict
-	}
+	ds.lockKey(storageKey)
 	defer ds.unLockKey(storageKey)
 
 	bb := make([][]byte, 0)
@@ -242,9 +235,7 @@ func (ds *diskStorage) Update(key storage.Key, content []byte, rv uint64) ([]byt
 		return nil, storage.ErrIsNotObjectKey
 	}
 
-	if !ds.lockKey(storageKey) {
-		return nil, storage.ErrStorageAccessConflict
-	}
+	ds.lockKey(storageKey)
 	defer ds.unLockKey(storageKey)
 
 	absPath := filepath.Join(ds.baseDir, storageKey.Key())
@@ -294,9 +285,7 @@ func (ds *diskStorage) ListResourceKeysOfComponent(component string, gvr schema.
 	}
 	storageKey := rootKey.(storageKey)
 
-	if !ds.lockKey(storageKey) {
-		return nil, storage.ErrStorageAccessConflict
-	}
+	ds.lockKey(storageKey)
 	defer ds.unLockKey(storageKey)
 
 	absPath := filepath.Join(ds.baseDir, storageKey.Key())
@@ -308,16 +297,17 @@ func (ds *diskStorage) ListResourceKeysOfComponent(component string, gvr schema.
 		return nil, fmt.Errorf("could not list files at %s, %v", filepath.Join(ds.baseDir, storageKey.Key()), err)
 	}
 
-	keys := make([]storage.Key, len(files))
-	for i, filePath := range files {
+	keys := make([]storage.Key, 0, len(files))
+	for _, filePath := range files {
+		if isTmpFile(filePath) {
+			continue
+		}
 		_, _, ns, n, err := extractInfoFromPath(ds.baseDir, filePath, false)
 		if err != nil {
 			klog.Errorf("failed when list keys of resource %s of component %s, %v", component, gvr, err)
 			continue
 		}
-		// We can ensure that component and resource can't be empty
-		// so ignore the err.
-		key, _ := ds.KeyFunc(storage.KeyBuildInfo{
+		key, err := ds.KeyFunc(storage.KeyBuildInfo{
 			Component: component,
 			Resources: gvr.Resource,
 			Version:   gvr.Version,
@@ -325,7 +315,11 @@ func (ds *diskStorage) ListResourceKeysOfComponent(component string, gvr schema.
 			Namespace: ns,
 			Name:      n,
 		})
-		keys[i] = key
+		if err != nil {
+			klog.Errorf("failed to build key for resource %s of component %s, %v", component, gvr, err)
+			continue
+		}
+		keys = append(keys, key)
 	}
 	return keys, nil
 }
@@ -353,9 +347,7 @@ func (ds *diskStorage) ReplaceComponentList(component string, gvr schema.GroupVe
 		}
 	}
 
-	if !ds.lockKey(storageKey) {
-		return storage.ErrStorageAccessConflict
-	}
+	ds.lockKey(storageKey)
 	defer ds.unLockKey(storageKey)
 
 	// 1. mv old dir into tmp_dir when rootKey dir already exists
@@ -382,21 +374,25 @@ func (ds *diskStorage) ReplaceComponentList(component string, gvr schema.GroupVe
 	}
 
 	// 2. create new file with contents
-	// TODO: if error happens, we may need retry mechanism, or add some mechanism to do consistency check.
+	// On any create/write failure: restore from tmpPath (original data) and return error.
+	if err := ds.fsOperator.CreateDir(absPath); err != nil {
+		klog.Errorf("could not create dir at %s, %v", absPath, err)
+		return ds.restoreReplaceFromBackup(tmpPath, absPath, fmt.Errorf("could not create dir at %s, %v", absPath, err))
+	}
 	for key, data := range contents {
 		path := filepath.Join(ds.baseDir, key.Key())
 		if err := ds.fsOperator.CreateDir(filepath.Dir(path)); err != nil && err != fs.ErrExists {
 			klog.Errorf("could not create dir at %s, %v", filepath.Dir(path), err)
-			continue
+			return ds.restoreReplaceFromBackup(tmpPath, absPath, fmt.Errorf("could not create dir at %s, %v", filepath.Dir(path), err))
 		}
 		if err := ds.fsOperator.CreateFile(path, data); err != nil {
 			klog.Errorf("could not write data to %s, %v", path, err)
-			continue
+			return ds.restoreReplaceFromBackup(tmpPath, absPath, fmt.Errorf("could not write data to %s, %v", path, err))
 		}
 		klog.V(4).Infof("[diskStorage] ReplaceComponentList store data at %s", path)
 	}
 
-	//  3. delete old tmp dir
+	// 3. delete old tmp dir only when replacement fully succeeded
 	return ds.fsOperator.DeleteDir(tmpPath)
 }
 
@@ -409,9 +405,7 @@ func (ds *diskStorage) DeleteComponentResources(component string) error {
 		path:    component,
 		rootKey: true,
 	}
-	if !ds.lockKey(rootKey) {
-		return storage.ErrStorageAccessConflict
-	}
+	ds.lockKey(rootKey)
 	defer ds.unLockKey(rootKey)
 
 	absKey := filepath.Join(ds.baseDir, rootKey.Key())
@@ -421,50 +415,62 @@ func (ds *diskStorage) DeleteComponentResources(component string) error {
 	return nil
 }
 
-func (ds *diskStorage) SaveClusterInfo(key storage.ClusterInfoKey, content []byte) error {
-	var path string
-	switch key.ClusterInfoType {
-	case storage.APIsInfo, storage.Version:
-		path = filepath.Join(ds.baseDir, string(key.ClusterInfoType))
-	case storage.APIResourcesInfo:
-		translatedURLPath := strings.ReplaceAll(key.UrlPath, "/", "_")
-		path = filepath.Join(ds.baseDir, translatedURLPath)
-	default:
-		return storage.ErrUnknownClusterInfoType
+func (ds *diskStorage) clusterInfoFilePath(key storage.Key) (string, error) {
+	clusterKey, ok := key.(*storage.ClusterInfoKey)
+	if !ok {
+		return "", storage.ErrUnrecognizedKey
 	}
 
+	keyPath := clusterKey.Key()
+	if keyPath == "" {
+		return "", storage.ErrUnknownClusterInfoType
+	}
+
+	path := filepath.Join(ds.baseDir, keyPath)
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("could not resolve clusterInfo path %s, %v", path, err)
+	}
+	absBase, err := filepath.Abs(ds.baseDir)
+	if err != nil {
+		return "", fmt.Errorf("could not resolve storage base dir %s, %v", ds.baseDir, err)
+	}
+	rel, err := filepath.Rel(absBase, absPath)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return "", storage.ErrUnrecognizedKey
+	}
+	return path, nil
+}
+
+func (ds *diskStorage) SaveClusterInfo(key storage.Key, content []byte) error {
+	path, err := ds.clusterInfoFilePath(key)
+	if err != nil {
+		return err
+	}
 	if err := ds.fsOperator.CreateFile(path, content); err != nil {
 		if err == fs.ErrExists {
 			// file exists, overwrite it with content
 			if werr := ds.fsOperator.Write(path, content); werr != nil {
-				return fmt.Errorf("could not update clusterInfo %s at path %s, %v", key.ClusterInfoType, path, werr)
+				return fmt.Errorf("could not update clusterInfo at path %s, %v", path, werr)
 			}
 			return nil
 		}
-		return fmt.Errorf("could not create %s clusterInfo file at path %s, %v", key.ClusterInfoType, path, err)
+		return fmt.Errorf("could not create clusterInfo file at path %s, %v", path, err)
 	}
 	return nil
 }
 
-func (ds *diskStorage) GetClusterInfo(key storage.ClusterInfoKey) ([]byte, error) {
-	var path string
-	switch key.ClusterInfoType {
-	case storage.APIsInfo, storage.Version:
-		path = filepath.Join(ds.baseDir, string(key.ClusterInfoType))
-	case storage.APIResourcesInfo:
-		translatedURLPath := strings.ReplaceAll(key.UrlPath, "/", "_")
-		path = filepath.Join(ds.baseDir, translatedURLPath)
-	default:
-		return nil, storage.ErrUnknownClusterInfoType
+func (ds *diskStorage) GetClusterInfo(key storage.Key) ([]byte, error) {
+	path, err := ds.clusterInfoFilePath(key)
+	if err != nil {
+		return nil, err
 	}
-
 	var buf []byte
-	var err error
 	if buf, err = ds.fsOperator.Read(path); err != nil {
 		if err == fs.ErrNotExists {
 			return nil, storage.ErrStorageNotFound
 		}
-		return nil, fmt.Errorf("could not read %s clusterInfo file at %s, %v", key.ClusterInfoType, path, err)
+		return nil, fmt.Errorf("could not read clusterInfo file at %s, %v", path, err)
 	}
 	return buf, nil
 }
@@ -554,30 +560,51 @@ func (ds *diskStorage) recoverDir(tmpPath string) error {
 	return nil
 }
 
-func (ds *diskStorage) lockKey(key storageKey) bool {
+// restoreReplaceFromBackup moves tmpPath back to absPath and returns restoreErr.
+// Use when ReplaceComponentList step 2 fails: partial new content is discarded, original is restored.
+func (ds *diskStorage) restoreReplaceFromBackup(tmpPath, absPath string, restoreErr error) error {
+	if re := ds.fsOperator.Rename(tmpPath, absPath); re != nil {
+		klog.Errorf("could not restore from backup %s to %s after error: %v; restore failed: %v", tmpPath, absPath, restoreErr, re)
+		return fmt.Errorf("replace failed: %v; restore from backup failed: %v", restoreErr, re)
+	}
+	klog.V(2).Infof("restored from backup %s to %s after error: %v", tmpPath, absPath, restoreErr)
+	return restoreErr
+}
+
+func (ds *diskStorage) lockKey(key storageKey) {
 	keyStr := key.Key()
 	ds.Lock()
 	defer ds.Unlock()
-	if _, ok := ds.keyPendingStatus[keyStr]; ok {
-		klog.Infof("key(%s) storage is pending, just skip it", keyStr)
-		return false
+
+	if ds.cond == nil {
+		ds.cond = sync.NewCond(&ds.Mutex)
+	}
+	if ds.keyPendingStatus == nil {
+		ds.keyPendingStatus = make(map[string]struct{})
 	}
 
-	for pendingKey := range ds.keyPendingStatus {
-		if len(keyStr) > len(pendingKey) {
-			if strings.Contains(keyStr, fmt.Sprintf("%s/", pendingKey)) {
-				klog.Infof("key(%s) storage is pending, skip to store key(%s)", pendingKey, keyStr)
-				return false
-			}
+	for {
+		conflict := false
+		if _, ok := ds.keyPendingStatus[keyStr]; ok {
+			conflict = true
 		} else {
-			if strings.Contains(pendingKey, fmt.Sprintf("%s/", keyStr)) {
-				klog.Infof("key(%s) storage is pending, skip to store key(%s)", pendingKey, keyStr)
-				return false
+			for pendingKey := range ds.keyPendingStatus {
+				if strings.HasPrefix(keyStr, pendingKey+"/") || strings.HasPrefix(pendingKey, keyStr+"/") {
+					conflict = true
+					break
+				}
 			}
 		}
+
+		if !conflict {
+			break
+		}
+
+		klog.V(4).Infof("key(%s) storage is pending, waiting for lock", keyStr)
+		ds.cond.Wait()
 	}
+
 	ds.keyPendingStatus[keyStr] = struct{}{}
-	return true
 }
 
 func (ds *diskStorage) ifFresherThan(oldObj []byte, newRV uint64) (bool, error) {
@@ -600,7 +627,13 @@ func (ds *diskStorage) ifFresherThan(oldObj []byte, newRV uint64) (bool, error) 
 func (ds *diskStorage) unLockKey(key storageKey) {
 	ds.Lock()
 	defer ds.Unlock()
-	delete(ds.keyPendingStatus, key.Key())
+
+	if ds.keyPendingStatus != nil {
+		delete(ds.keyPendingStatus, key.Key())
+	}
+	if ds.cond != nil {
+		ds.cond.Broadcast()
+	}
 }
 
 func ifEnhancement(baseDir string, fsOperator fs.FileSystemOperator) (bool, error) {
@@ -652,13 +685,15 @@ func getKey(tmpKey string) string {
 }
 
 func extractInfoFromPath(baseDir, path string, isRoot bool) (component, gvr, namespace, name string, err error) {
+	baseDir = filepath.ToSlash(baseDir)
+	path = filepath.ToSlash(path)
 	if !strings.HasPrefix(path, baseDir) {
 		err = fmt.Errorf("path %s does not under %s", path, baseDir)
 		return
 	}
-	trimedPath := strings.TrimPrefix(path, baseDir)
-	trimedPath = strings.TrimPrefix(trimedPath, "/")
-	elems := strings.Split(trimedPath, "/")
+	trimmedPath := strings.TrimPrefix(path, baseDir)
+	trimmedPath = strings.TrimPrefix(trimmedPath, "/")
+	elems := strings.Split(trimmedPath, "/")
 	if len(elems) > 4 {
 		err = fmt.Errorf("invalid path %s", path)
 		return

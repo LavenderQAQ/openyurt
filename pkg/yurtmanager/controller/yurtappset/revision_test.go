@@ -17,6 +17,8 @@ limitations under the License.
 package yurtappset
 
 import (
+	"context"
+	"fmt"
 	"reflect"
 	"testing"
 
@@ -31,7 +33,6 @@ import (
 
 	"github.com/openyurtio/openyurt/pkg/apis"
 	yurtapps "github.com/openyurtio/openyurt/pkg/apis/apps"
-	"github.com/openyurtio/openyurt/pkg/apis/apps/v1beta1"
 	beta1 "github.com/openyurtio/openyurt/pkg/apis/apps/v1beta1"
 )
 
@@ -390,7 +391,7 @@ func TestCreateControllerRevision(t *testing.T) {
 			cli:       fake.NewClientBuilder().WithScheme(fakeScheme).WithObjects(cr2.DeepCopy()).Build(),
 		},
 		{
-			name: "create success with already exist and collison occurs",
+			name: "create success with already exist and collision occurs",
 			yas: &beta1.YurtAppSet{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-yurtappset",
@@ -415,6 +416,14 @@ func TestCreateControllerRevision(t *testing.T) {
 
 }
 
+type errorOnDeleteClient struct {
+	client.Client
+}
+
+func (e *errorOnDeleteClient) Delete(ctx context.Context, obj client.Object, opts ...client.DeleteOption) error {
+	return fmt.Errorf("simulated delete failure")
+}
+
 func TestCleanRevisions(t *testing.T) {
 
 	itemRevisionHistoryLimit := int32(0)
@@ -433,7 +442,7 @@ func TestCleanRevisions(t *testing.T) {
 					Name:      "test-yurtappset",
 					Namespace: "default",
 				},
-				Spec: v1beta1.YurtAppSetSpec{
+				Spec: beta1.YurtAppSetSpec{
 					RevisionHistoryLimit: &itemRevisionHistoryLimit,
 				},
 			},
@@ -463,12 +472,36 @@ func TestCleanRevisions(t *testing.T) {
 				cr2.DeepCopy(),
 			).Build(),
 		},
+		{
+			name: "clean fails when delete errors",
+			yas: &beta1.YurtAppSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-yurtappset",
+					Namespace: "default",
+				},
+				Spec: beta1.YurtAppSetSpec{
+					RevisionHistoryLimit: &itemRevisionHistoryLimit,
+				},
+			},
+			revisions: []*apps.ControllerRevision{
+				cr1.DeepCopy(), cr2.DeepCopy(),
+			},
+			err: true,
+			cli: &errorOnDeleteClient{
+				Client: fake.NewClientBuilder().WithScheme(fakeScheme).WithObjects(
+					cr1.DeepCopy(),
+					cr2.DeepCopy(),
+				).Build(),
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := cleanRevisions(tt.cli, tt.yas, tt.revisions)
-			if !tt.err {
+			if tt.err {
+				assert.Error(t, err)
+			} else {
 				assert.NoError(t, err)
 			}
 		})
@@ -476,8 +509,8 @@ func TestCleanRevisions(t *testing.T) {
 }
 
 func TestControlledHistories(t *testing.T) {
-	// cr_should_adopt is a cr has owner label but doesnot has owner reference
-	cr_should_adopt := apps.ControllerRevision{
+	// crShouldAdopt is a cr has owner label but does not has owner reference
+	crShouldAdopt := apps.ControllerRevision{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-yurtappset-1",
 			Namespace: "default",
@@ -487,8 +520,8 @@ func TestControlledHistories(t *testing.T) {
 			Raw: []byte(`{"a":"a"}`),
 		},
 	}
-	// cr_should_release is a cr not has owner label but has owner reference
-	cr_should_release := apps.ControllerRevision{
+	// crShouldRelease is a cr not has owner label but has owner reference
+	crShouldRelease := apps.ControllerRevision{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-yurtappset-2",
 			Namespace: "default",
@@ -498,17 +531,17 @@ func TestControlledHistories(t *testing.T) {
 		},
 		Revision: 0,
 	}
-	controllerutil.SetControllerReference(&yas, &cr_should_release, fakeScheme)
+	controllerutil.SetControllerReference(&yas, &crShouldRelease, fakeScheme)
 
 	crs, err := controlledHistories(fake.NewClientBuilder().WithScheme(fakeScheme).WithObjects(
-		&cr_should_adopt,
-		&cr_should_release,
+		&crShouldAdopt,
+		&crShouldRelease,
 		&yas,
 	).Build(), fakeScheme, &yas)
 	assert.NoError(t, err)
 
 	assert.Len(t, crs, 1)
-	assert.Equal(t, cr_should_adopt.Name, crs[0].Name)
+	assert.Equal(t, crShouldAdopt.Name, crs[0].Name)
 }
 
 func TestConstructYurtAppSetRevisions(t *testing.T) {

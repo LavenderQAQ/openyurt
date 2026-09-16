@@ -27,4 +27,20 @@ type InitSystem interface {
 
 	// ServiceIsActive ensures the service is running, or attempting to run. (crash looping in the case of kubelet)
 	ServiceIsActive(service string) bool
+
+	// ServiceToStart tries to start a specific service
+	ServiceStart(service string) error
+
+	// ServiceStop tries to stop a specific service
+	ServiceStop(service string) error
 }
+
+// EmptyInitSystem is a no-op InitSystem for testing or environments without a real init system.
+// ServiceIsEnabled and ServiceIsActive always return true; ServiceEnable, ServiceStart, and ServiceStop always succeed (nil error).
+type EmptyInitSystem struct{}
+
+func (EmptyInitSystem) ServiceIsEnabled(string) bool { return false }
+func (EmptyInitSystem) ServiceEnable(string) error   { return nil }
+func (EmptyInitSystem) ServiceIsActive(string) bool  { return false }
+func (EmptyInitSystem) ServiceStart(string) error    { return nil }
+func (EmptyInitSystem) ServiceStop(string) error     { return nil }

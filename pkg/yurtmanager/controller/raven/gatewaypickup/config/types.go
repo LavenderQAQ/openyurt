@@ -18,4 +18,5 @@ package config
 
 // GatewayPickupControllerConfiguration contains elements describing GatewayPickController.
 type GatewayPickupControllerConfiguration struct {
+	ConcurrentGatewayPickupWorkers int32
 }

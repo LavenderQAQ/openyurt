@@ -70,15 +70,15 @@ func newReconciler(_ *appconfig.CompletedConfig, mgr manager.Manager) reconcile.
 // add adds a new Controller to mgr with r as the reconcile.Reconciler
 func add(mgr manager.Manager, cfg *appconfig.CompletedConfig, r reconcile.Reconciler) error {
 	// Create a new controller
-	c, err := controller.New(names.ServiceTopologyEndpointsController, mgr, controller.Options{Reconciler: r, MaxConcurrentReconciles: int(cfg.ComponentConfig.ServiceTopologyEndpointsController.ConcurrentEndPointsWorkers)})
+	c, err := controller.New(names.ServiceTopologyEndpointsController, mgr, controller.Options{Reconciler: r, MaxConcurrentReconciles: int(cfg.ComponentConfig.ServiceTopologyEndpointsController.ConcurrentEndpointsWorkers)})
 	if err != nil {
 		return err
 	}
 
 	// Watch for changes to Service
-	if err := c.Watch(source.Kind(mgr.GetCache(), &corev1.Service{}), &EnqueueEndpointsForService{
+	if err := c.Watch(source.Kind[client.Object](mgr.GetCache(), &corev1.Service{}, &EnqueueEndpointsForService{
 		endpointsAdapter: r.(*ReconcileServicetopologyEndpoints).endpointsAdapter,
-	}); err != nil {
+	})); err != nil {
 		return err
 	}
 
@@ -86,7 +86,6 @@ func add(mgr manager.Manager, cfg *appconfig.CompletedConfig, r reconcile.Reconc
 }
 
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get
-// +kubebuilder:rbac:groups=apps.openyurt.io,resources=nodepools,verbs=get
 // +kubebuilder:rbac:groups=core,resources=endpoints,verbs=get;patch
 
 // Reconcile reads that state of the cluster for endpoints object and makes changes based on the state read
@@ -95,9 +94,10 @@ func (r *ReconcileServicetopologyEndpoints) Reconcile(_ context.Context, request
 	// Note !!!!!!!!!!
 	// We strongly recommend use Format() to  encapsulation because Format() can print logs by module
 	// @kadisi
-	klog.Infof(Format("Reconcile Endpoints %s/%s", request.Namespace, request.Name))
+	klog.Info(Format("Reconcile Endpoints %s/%s", request.Namespace, request.Name))
 
 	// Fetch the Endpoints instance
+	//nolint:staticcheck // SA1019: corev1.Endpoints is deprecated but still supported for backward compatibility
 	instance := &corev1.Endpoints{}
 	if err := r.Get(context.TODO(), request.NamespacedName, instance); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
@@ -108,7 +108,7 @@ func (r *ReconcileServicetopologyEndpoints) Reconcile(_ context.Context, request
 	}
 
 	if err := r.syncEndpoints(request.Namespace, request.Name); err != nil {
-		klog.Errorf(Format("sync endpoints %v failed with : %v", request.NamespacedName, err))
+		klog.Error(Format("sync endpoints %v failed with : %v", request.NamespacedName, err))
 		return reconcile.Result{Requeue: true}, err
 	}
 

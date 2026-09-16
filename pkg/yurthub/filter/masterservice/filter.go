@@ -21,7 +21,6 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
 
 	"github.com/openyurtio/openyurt/pkg/yurthub/filter"
@@ -58,16 +57,9 @@ func (msf *masterServiceFilter) Name() string {
 	return FilterName
 }
 
-func (msf *masterServiceFilter) SupportedResourceAndVerbs() map[string]sets.Set[string] {
-	return map[string]sets.Set[string]{
-		"services": sets.New("list", "watch"),
-	}
-}
-
 func (msf *masterServiceFilter) SetMasterServiceHost(host string) error {
 	msf.host = host
 	return nil
-
 }
 
 func (msf *masterServiceFilter) SetMasterServicePort(portStr string) error {
@@ -82,22 +74,28 @@ func (msf *masterServiceFilter) SetMasterServicePort(portStr string) error {
 func (msf *masterServiceFilter) Filter(obj runtime.Object, _ <-chan struct{}) runtime.Object {
 	switch v := obj.(type) {
 	case *v1.Service:
-		msf.mutateMasterService(v)
-		return v
+		return msf.mutateMasterService(v)
 	default:
 		return v
 	}
 }
 
-func (msf *masterServiceFilter) mutateMasterService(svc *v1.Service) {
-	if svc.Namespace == MasterServiceNamespace && svc.Name == MasterServiceName {
-		svc.Spec.ClusterIP = msf.host
-		for j := range svc.Spec.Ports {
-			if svc.Spec.Ports[j].Name == MasterServicePortName {
-				svc.Spec.Ports[j].Port = msf.port
-				break
-			}
-		}
-		klog.Infof("mutate master service with ClusterIP:Port=%s:%d", msf.host, msf.port)
+func (msf *masterServiceFilter) mutateMasterService(svc *v1.Service) *v1.Service {
+	if svc.Namespace != MasterServiceNamespace || svc.Name != MasterServiceName {
+		return svc
 	}
+
+	newSvc := svc.DeepCopy()
+	newSvc.Spec.ClusterIP = msf.host
+	newSvc.Spec.ClusterIPs = []string{msf.host}
+
+	for j := range svc.Spec.Ports {
+		if newSvc.Spec.Ports[j].Name == MasterServicePortName {
+			newSvc.Spec.Ports[j].Port = msf.port
+			break
+		}
+	}
+	klog.Infof("mutate master service with ClusterIP:Port=%s:%d", msf.host, msf.port)
+
+	return newSvc
 }

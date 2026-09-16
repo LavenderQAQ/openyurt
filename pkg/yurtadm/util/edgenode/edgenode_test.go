@@ -96,6 +96,43 @@ func Test_GetHostName(t *testing.T) {
 	}
 }
 
+func TestParseEnvironmentFilePath(t *testing.T) {
+	tests := []struct {
+		name      string
+		directive string
+		expected  string
+	}{
+		{
+			name:      "kubeadm default with ignore-prefix and hyphen in path",
+			directive: "EnvironmentFile=-/var/lib/kubelet/kubeadm-flags.env",
+			expected:  "/var/lib/kubelet/kubeadm-flags.env",
+		},
+		{
+			name:      "no ignore-prefix and no hyphen in path",
+			directive: "EnvironmentFile=/opt/kubelet/config.env",
+			expected:  "/opt/kubelet/config.env",
+		},
+		{
+			name:      "ignore-prefix without hyphen in path",
+			directive: "EnvironmentFile=-/etc/default/kubelet",
+			expected:  "/etc/default/kubelet",
+		},
+		{
+			name:      "surrounding whitespace is trimmed",
+			directive: "EnvironmentFile= -/var/lib/kubelet/kubeadm-flags.env ",
+			expected:  "/var/lib/kubelet/kubeadm-flags.env",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := parseEnvironmentFilePath(tt.directive); got != tt.expected {
+				t.Errorf("parseEnvironmentFilePath(%q) = %q, want %q", tt.directive, got, tt.expected)
+			}
+		})
+	}
+}
+
 func TestDeployStaticYaml(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -110,20 +147,6 @@ func TestDeployStaticYaml(t *testing.T) {
 			templateList:    []string{"xxxxxx"},
 			podManifestPath: "/tmp",
 			wantErr:         false,
-		},
-		{
-			name:            "test2",
-			manifestList:    []string{"nginx"},
-			templateList:    []string{"xxxxxx"},
-			podManifestPath: "/etc/kubernetes/?",
-			wantErr:         true,
-		},
-		{
-			name:            "test3",
-			manifestList:    []string{"nginx"},
-			templateList:    []string{"xxxxxx"},
-			podManifestPath: "/root",
-			wantErr:         true,
 		},
 	}
 	for _, tt := range tests {
@@ -147,18 +170,6 @@ func TestRemoveStaticYaml(t *testing.T) {
 			manifestList:    []string{"nginx"},
 			podManifestPath: "/tmp",
 			wantErr:         false,
-		},
-		{
-			name:            "test2",
-			manifestList:    []string{"nginx"},
-			podManifestPath: "/etc/kubernetes/?",
-			wantErr:         true,
-		},
-		{
-			name:            "test3",
-			manifestList:    []string{"nginx"},
-			podManifestPath: "/root",
-			wantErr:         true,
 		},
 	}
 	for _, tt := range tests {

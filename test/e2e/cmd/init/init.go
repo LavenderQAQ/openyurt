@@ -31,13 +31,21 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
 	kubeclientset "k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog/v2"
 	kubectllogs "k8s.io/kubectl/pkg/cmd/logs"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	appsv1alpha1 "github.com/openyurtio/openyurt/pkg/apis/apps/v1alpha1"
+	appsv1beta1 "github.com/openyurtio/openyurt/pkg/apis/apps/v1beta1"
+	appsv1beta2 "github.com/openyurtio/openyurt/pkg/apis/apps/v1beta2"
+	iotv1alpha2 "github.com/openyurtio/openyurt/pkg/apis/iot/v1alpha2"
+	iotv1beta1 "github.com/openyurtio/openyurt/pkg/apis/iot/v1beta1"
 	"github.com/openyurtio/openyurt/pkg/projectinfo"
 	strutil "github.com/openyurtio/openyurt/pkg/util/strings"
 	tmplutil "github.com/openyurtio/openyurt/pkg/util/templates"
@@ -46,7 +54,7 @@ import (
 )
 
 const (
-	flannelYAMLURL    = "https://raw.githubusercontent.com/flannel-io/flannel/master/Documentation/kube-flannel.yml"
+	flannelYAMLURL    = "https://raw.githubusercontent.com/flannel-io/flannel/v0.25.0/Documentation/kube-flannel.yml"
 	cniPluginsBaseURL = "https://github.com/containernetworking/plugins/releases/download/v1.4.1"
 )
 
@@ -65,11 +73,18 @@ var (
 		"v1.27",
 		"v1.28",
 		"v1.29",
+		"v1.30",
+		"v1.31",
+		"v1.32",
+		"v1.34",
 	}
 	validKindVersions = []string{
 		"v0.11.1",
 		"v0.12.0",
 		"v0.22.0",
+		"v0.25.0",
+		"v0.26.0",
+		"v0.31.0",
 	}
 	AllValidOpenYurtVersions = append(projectinfo.Get().AllVersions, "latest")
 
@@ -99,13 +114,63 @@ var (
 			"v1.28": "kindest/node:v1.28.7@sha256:9bc6c451a289cf96ad0bbaf33d416901de6fd632415b076ab05f5fa7e4f65c58",
 			"v1.29": "kindest/node:v1.29.2@sha256:51a1434a5397193442f0be2a297b488b6c919ce8a3931be0ce822606ea5ca245",
 		},
+		"v0.25.0": {
+			"v1.31": "kindest/node:v1.31.2@sha256:18fbefc20a7113353c7b75b5c869d7145a6abd6269154825872dc59c1329912e",
+			"v1.30": "kindest/node:v1.30.6@sha256:b6d08db72079ba5ae1f4a88a09025c0a904af3b52387643c285442afb05ab994",
+			"v1.29": "kindest/node:v1.29.10@sha256:3b2d8c31753e6c8069d4fc4517264cd20e86fd36220671fb7d0a5855103aa84b",
+			"v1.28": "kindest/node:v1.28.15@sha256:a7c05c7ae043a0b8c818f5a06188bc2c4098f6cb59ca7d1856df00375d839251",
+			"v1.27": "kindest/node:v1.27.16@sha256:2d21a61643eafc439905e18705b8186f3296384750a835ad7a005dceb9546d20",
+			"v1.26": "kindest/node:v1.26.15@sha256:c79602a44b4056d7e48dc20f7504350f1e87530fe953428b792def00bc1076dd",
+		},
+		"v0.26.0": {
+			"v1.32": "kindest/node:v1.32.0@sha256:c48c62eac5da28cdadcf560d1d8616cfa6783b58f0d94cf63ad1bf49600cb027",
+			"v1.30": "kindest/node:v1.30.8@sha256:17cd608b3971338d9180b00776cb766c50d0a0b6b904ab4ff52fd3fc5c6369bf",
+		},
+		"v0.31.0": {
+			"v1.34": "kindest/node:v1.34.3@sha256:08497ee19eace7b4b5348db5c6a1591d7752b164530a36f855cb0f2bdcbadd48",
+			"v1.32": "kindest/node:v1.32.0@sha256:c48c62eac5da28cdadcf560d1d8616cfa6783b58f0d94cf63ad1bf49600cb027",
+		},
 	}
 
-	yurtHubImageFormat     = "openyurt/yurthub:%s"
 	yurtManagerImageFormat = "openyurt/yurt-manager:%s"
 	nodeServantImageFormat = "openyurt/node-servant:%s"
 	yurtIotDockImageFormat = "openyurt/yurt-iot-dock:%s"
+
+	NodeNameToPool = map[string]string{
+		"openyurt-e2e-test-control-plane": "yurt-pool1",
+		"openyurt-e2e-test-worker":        "yurt-pool2",
+		"openyurt-e2e-test-worker2":       "yurt-pool2",
+		"openyurt-e2e-test-worker3":       "yurt-pool3",
+		"openyurt-e2e-test-worker4":       "yurt-pool3",
+	}
+	DefaultPools = map[string]struct {
+		Kind                 appsv1beta2.NodePoolType
+		EnableLeaderElection bool
+		LeaderReplicas       int
+	}{
+		"yurt-pool1": {
+			Kind:                 appsv1beta2.Cloud,
+			EnableLeaderElection: false,
+		},
+		"yurt-pool2": {
+			Kind:                 appsv1beta2.Edge,
+			EnableLeaderElection: true,
+			LeaderReplicas:       1,
+		},
+		"yurt-pool3": {
+			Kind:                 appsv1beta2.Edge,
+			EnableLeaderElection: false,
+		},
+	}
 )
+
+func init() {
+	utilruntime.Must(appsv1alpha1.AddToScheme(scheme.Scheme))
+	utilruntime.Must(appsv1beta1.AddToScheme(scheme.Scheme))
+	utilruntime.Must(appsv1beta2.AddToScheme(scheme.Scheme))
+	utilruntime.Must(iotv1alpha2.AddToScheme(scheme.Scheme))
+	utilruntime.Must(iotv1beta1.AddToScheme(scheme.Scheme))
+}
 
 func NewInitCMD(out io.Writer) *cobra.Command {
 	o := newKindOptions()
@@ -214,7 +279,6 @@ func (o *kindOptions) Config() *initializerConfig {
 		ClusterName:       o.ClusterName,
 		KubernetesVersion: o.KubernetesVersion,
 		UseLocalImage:     o.UseLocalImages,
-		YurtHubImage:      fmt.Sprintf(yurtHubImageFormat, o.OpenYurtVersion),
 		YurtManagerImage:  fmt.Sprintf(yurtManagerImageFormat, o.OpenYurtVersion),
 		NodeServantImage:  fmt.Sprintf(nodeServantImageFormat, o.OpenYurtVersion),
 		yurtIotDockImage:  fmt.Sprintf(yurtIotDockImageFormat, o.OpenYurtVersion),
@@ -257,7 +321,6 @@ type initializerConfig struct {
 	KubernetesVersion string
 	NodeImage         string
 	UseLocalImage     bool
-	YurtHubImage      string
 	YurtManagerImage  string
 	NodeServantImage  string
 	yurtIotDockImage  string
@@ -269,6 +332,7 @@ type Initializer struct {
 	out               io.Writer
 	operator          *KindOperator
 	kubeClient        kubeclientset.Interface
+	runtimeClient     client.Client
 	componentsBuilder *kubeutil.Builder
 }
 
@@ -309,6 +373,11 @@ func (ki *Initializer) Run() error {
 	ki.componentsBuilder = kubeutil.NewBuilder(ki.KubeConfig)
 
 	ki.kubeClient, err = kubeclientset.NewForConfig(cfg)
+	if err != nil {
+		return err
+	}
+
+	ki.runtimeClient, err = client.New(cfg, client.Options{Scheme: scheme.Scheme})
 	if err != nil {
 		return err
 	}
@@ -481,7 +550,7 @@ func allNodesReady(clientset kubeclientset.Interface) wait.ConditionWithContextF
 			if !isNodeReady {
 				url := clientset.CoreV1().RESTClient().Get().Resource("nodes").Name(node.Name).URL()
 				nodeRequest := clientset.CoreV1().RESTClient().Get().AbsPath(url.Path)
-				if err := kubectllogs.DefaultConsumeRequest(nodeRequest, os.Stderr); err != nil {
+				if err := kubectllogs.DefaultConsumeRequest(context.TODO(), nodeRequest, os.Stderr); err != nil {
 					klog.Errorf("failed to print node(%s) info, %v", node.Name, err)
 				}
 				return false, nil
@@ -497,7 +566,6 @@ func (ki *Initializer) prepareImages() error {
 	}
 	// load images of cloud components to cloud nodes
 	if err := ki.loadImagesToKindNodes([]string{
-		ki.YurtHubImage,
 		ki.YurtManagerImage,
 		ki.NodeServantImage,
 		ki.yurtIotDockImage,
@@ -507,7 +575,6 @@ func (ki *Initializer) prepareImages() error {
 
 	// load images of edge components to edge nodes
 	if err := ki.loadImagesToKindNodes([]string{
-		ki.YurtHubImage,
 		ki.NodeServantImage,
 		ki.yurtIotDockImage,
 	}, ki.EdgeNodes); err != nil {
@@ -535,7 +602,7 @@ func (ki *Initializer) prepareKindConfigFile(kindConfigPath string) error {
 	if err := os.MkdirAll(kindConfigDir, constants.DirMode); err != nil {
 		return err
 	}
-	kindConfigContent, err := tmplutil.SubsituteTemplate(constants.OpenYurtKindConfig, map[string]string{
+	kindConfigContent, err := tmplutil.SubstituteTemplate(constants.OpenYurtKindConfig, map[string]string{
 		"kind_node_image":     ki.NodeImage,
 		"cluster_name":        ki.ClusterName,
 		"disable_default_cni": fmt.Sprintf("%v", ki.DisableDefaultCNI),
@@ -546,7 +613,7 @@ func (ki *Initializer) prepareKindConfigFile(kindConfigPath string) error {
 
 	// add additional worker entries into kind config file according to NodesNum
 	for num := 1; num < ki.NodesNum; num++ {
-		worker, err := tmplutil.SubsituteTemplate(constants.KindWorkerRole, map[string]string{
+		worker, err := tmplutil.SubstituteTemplate(constants.KindWorkerRole, map[string]string{
 			"kind_node_image": ki.NodeImage,
 		})
 		if err != nil {
@@ -563,7 +630,7 @@ func (ki *Initializer) prepareKindConfigFile(kindConfigPath string) error {
 }
 
 func (ki *Initializer) configureAddons() error {
-	if err := ki.configureCoreDnsAddon(); err != nil {
+	if err := ki.configureCoreDNSAddon(); err != nil {
 		return err
 	}
 
@@ -588,30 +655,30 @@ func (ki *Initializer) configureAddons() error {
 	}
 
 	// wait for coredns pods available
-	for {
-		select {
-		case <-time.After(10 * time.Second):
-			dnsDp, err := ki.kubeClient.AppsV1().Deployments("kube-system").Get(context.TODO(), "coredns", metav1.GetOptions{})
-			if err != nil {
-				return fmt.Errorf("failed to get coredns deployment when waiting for available, %v", err)
-			}
-
-			if dnsDp.Status.ObservedGeneration < dnsDp.Generation {
-				klog.Infof("waiting for coredns generation(%d) to be observed. now observed generation is %d", dnsDp.Generation, dnsDp.Status.ObservedGeneration)
-				continue
-			}
-
-			if *dnsDp.Spec.Replicas != dnsDp.Status.AvailableReplicas {
-				klog.Infof("waiting for coredns replicas(%d) to be ready, now %d pods available", *dnsDp.Spec.Replicas, dnsDp.Status.AvailableReplicas)
-				continue
-			}
-			klog.Info("coredns deployment configuration is completed")
-			return nil
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		dnsDp, err := ki.kubeClient.AppsV1().Deployments("kube-system").Get(context.TODO(), "coredns", metav1.GetOptions{})
+		if err != nil {
+			return fmt.Errorf("failed to get coredns deployment when waiting for available, %v", err)
 		}
+
+		if dnsDp.Status.ObservedGeneration < dnsDp.Generation {
+			klog.Infof("waiting for coredns generation(%d) to be observed. now observed generation is %d", dnsDp.Generation, dnsDp.Status.ObservedGeneration)
+			continue
+		}
+
+		if *dnsDp.Spec.Replicas != dnsDp.Status.AvailableReplicas {
+			klog.Infof("waiting for coredns replicas(%d) to be ready, now %d pods available", *dnsDp.Spec.Replicas, dnsDp.Status.AvailableReplicas)
+			continue
+		}
+		klog.Info("coredns deployment configuration is completed")
+		return nil
 	}
+	return nil
 }
 
-func (ki *Initializer) configureCoreDnsAddon() error {
+func (ki *Initializer) configureCoreDNSAddon() error {
 	dp, err := ki.kubeClient.AppsV1().Deployments("kube-system").Get(context.TODO(), "coredns", metav1.GetOptions{})
 	if err != nil {
 		return err
@@ -676,14 +743,13 @@ func (ki *Initializer) deployOpenYurt() error {
 	converter := &ClusterConverter{
 		RootDir:                   dir,
 		ClientSet:                 ki.kubeClient,
+		RuntimeClient:             ki.runtimeClient,
 		CloudNodes:                ki.CloudNodes,
 		EdgeNodes:                 ki.EdgeNodes,
-		WaitServantJobTimeout:     kubeutil.DefaultWaitServantJobTimeout,
-		YurthubHealthCheckTimeout: defaultYurthubHealthCheckTimeout,
+		WaitNodeConversionTimeout: kubeutil.DefaultWaitNodeConversionTimeout,
 		KubeConfigPath:            ki.KubeConfig,
 		YurtManagerImage:          ki.YurtManagerImage,
 		NodeServantImage:          ki.NodeServantImage,
-		YurthubImage:              ki.YurtHubImage,
 	}
 	if err := converter.Run(); err != nil {
 		klog.Errorf("errors occurred when deploying openyurt components")
@@ -736,7 +802,7 @@ func validateOpenYurtVersion(ver string, ignoreError bool) error {
 }
 
 // getNodeNamesOfKindCluster will generate all nodes will be in the kind cluster.
-// It depends on the naming machanism of kind:
+// It depends on the naming mechanism of kind:
 // one control-plane node: ${clusterName}-control-plane
 // serval worker nodes: ${clusterName}-worker, ${clusterName}-worker2, ${clusterName}-worker3...
 func getNodeNamesOfKindCluster(clusterName string, nodeNum int) (string, []string) {

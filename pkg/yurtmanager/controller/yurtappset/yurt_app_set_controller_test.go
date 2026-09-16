@@ -32,6 +32,7 @@ import (
 
 	"github.com/openyurtio/openyurt/pkg/apis/apps"
 	"github.com/openyurtio/openyurt/pkg/apis/apps/v1beta1"
+	"github.com/openyurtio/openyurt/pkg/apis/apps/v1beta2"
 	"github.com/openyurtio/openyurt/pkg/yurtmanager/controller/yurtappset/workloadmanager"
 )
 
@@ -143,7 +144,12 @@ func (f *fakeEventRecorder) Event(object runtime.Object, eventtype, reason, mess
 func (f *fakeEventRecorder) Eventf(object runtime.Object, eventtype, reason, messageFmt string, args ...interface{}) {
 }
 
-func (f *fakeEventRecorder) AnnotatedEventf(object runtime.Object, annotations map[string]string, eventtype, reason, messageFmt string, args ...interface{}) {
+func (f *fakeEventRecorder) AnnotatedEventf(
+	object runtime.Object,
+	annotations map[string]string,
+	eventtype, reason, messageFmt string,
+	args ...interface{},
+) {
 }
 
 func TestReconcile(t *testing.T) {
@@ -189,12 +195,12 @@ func TestReconcile(t *testing.T) {
 				},
 			},
 			npList: []client.Object{
-				&v1beta1.NodePool{
+				&v1beta2.NodePool{
 					ObjectMeta: metav1.ObjectMeta{
 						Name: "test-np1",
 					},
 				},
-				&v1beta1.NodePool{
+				&v1beta2.NodePool{
 					ObjectMeta: metav1.ObjectMeta{
 						Name: "test-np2",
 					},
@@ -279,7 +285,7 @@ func TestReconcile(t *testing.T) {
 				},
 			},
 			npList: []client.Object{
-				&v1beta1.NodePool{
+				&v1beta2.NodePool{
 					ObjectMeta: metav1.ObjectMeta{
 						Name: "test-np1",
 					},
@@ -336,7 +342,7 @@ func TestReconcile(t *testing.T) {
 				},
 			},
 			npList: []client.Object{
-				&v1beta1.NodePool{
+				&v1beta2.NodePool{
 					ObjectMeta: metav1.ObjectMeta{
 						Name: "test-np1",
 					},
@@ -396,9 +402,75 @@ func TestReconcile(t *testing.T) {
 
 			if tt.isUpdated {
 				for _, deploy := range deployList.Items {
-					assert.NotEqual(t, deploy.Labels[apps.ControllerRevisionHashLabelKey], tt.yas.Status.CurrentRevision)
+					assert.NotEqual(
+						t,
+						deploy.Labels[apps.ControllerRevisionHashLabelKey],
+						tt.yas.Status.CurrentRevision,
+					)
 				}
 			}
 		})
 	}
+}
+
+// TestReconcile_ReturnsErrorOnConciliationFailure verifies that errors from
+// conciliateYurtAppSet are propagated back to the caller instead of being
+// swallowed by the named return variable. Previously, the function returned
+// (Result{RequeueAfter: 1s}, nil) which bypassed exponential backoff.
+func TestReconcile_ReturnsErrorOnConciliationFailure(t *testing.T) {
+	// Create a YurtAppSet that will succeed through conciliateWorkloads
+	// (valid template + matching NodePool) but fail in conciliateYurtAppSet
+	// because the fake client's status subresource is not configured.
+	yas := &v1beta1.YurtAppSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-yas-error",
+			Namespace: "default",
+		},
+		Spec: v1beta1.YurtAppSetSpec{
+			Pools: []string{"test-np"},
+			Workload: v1beta1.Workload{
+				WorkloadTemplate: v1beta1.WorkloadTemplate{
+					DeploymentTemplate: &v1beta1.DeploymentTemplateSpec{
+						Spec: appsv1.DeploymentSpec{
+							Selector: &metav1.LabelSelector{
+								MatchLabels: map[string]string{
+									"app": "test-yas-error",
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	np := &v1beta2.NodePool{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-np",
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(fakeScheme).WithObjects(yas, np).Build()
+	r := &ReconcileYurtAppSet{
+		scheme:   fakeScheme,
+		Client:   fakeClient,
+		recorder: &fakeEventRecorder{},
+		workloadManagers: map[workloadmanager.TemplateType]workloadmanager.WorkloadManager{
+			workloadmanager.DeploymentTemplateType: &workloadmanager.DeploymentManager{
+				Client: fakeClient,
+				Scheme: fakeScheme,
+			},
+		},
+	}
+
+	_, err := r.Reconcile(context.TODO(), reconcile.Request{
+		NamespacedName: client.ObjectKey{
+			Name:      "test-yas-error",
+			Namespace: "default",
+		},
+	})
+
+	// The reconcile should return an error (from conciliateYurtAppSet failing
+	// to update status) rather than swallowing it with RequeueAfter + nil error.
+	// This ensures controller-runtime engages exponential backoff.
+	assert.NotNil(t, err, "Reconcile should return error on conciliation failure, not nil")
 }

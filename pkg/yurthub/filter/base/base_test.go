@@ -51,7 +51,7 @@ func (noh *nopObjectHandler) Filter(obj runtime.Object, stopCh <-chan struct{}) 
 }
 
 var (
-	nodesNameErr = errors.New("nodes name error")
+	errNodesName = errors.New("nodes name error")
 )
 
 type nopNodesErrHandler struct {
@@ -61,7 +61,7 @@ type nopNodesErrHandler struct {
 
 func NewNopNodesErrHandler() filter.ObjectFilter {
 	return &nopNodesErrHandler{
-		err: nodesNameErr,
+		err: errNodesName,
 	}
 }
 
@@ -137,7 +137,7 @@ func TestNewFromFilters(t *testing.T) {
 				filterName := tt.inputFilters[i]
 				filters.Register(filterName, func() (filter.ObjectFilter, error) {
 					if filterName == "invalidFilter" {
-						return nil, fmt.Errorf("a invalide filter")
+						return nil, fmt.Errorf("a invalid filter")
 					}
 					return &nopObjectHandler{name: filterName}, nil
 				})
@@ -193,7 +193,7 @@ func TestInitializers(t *testing.T) {
 		},
 		"initialize error": {
 			filter:    NewNopNodesErrHandler(),
-			resultErr: nodesNameErr,
+			resultErr: errNodesName,
 		},
 	}
 

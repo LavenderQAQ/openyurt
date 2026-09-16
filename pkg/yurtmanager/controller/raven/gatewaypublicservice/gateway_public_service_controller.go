@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+//nolint:staticcheck // SA1019: corev1.Endpoints is deprecated but still supported for backward compatibility
 package gatewaypublicservice
 
 import (
@@ -59,7 +60,7 @@ func Format(format string, args ...interface{}) string {
 // Add creates a new Service Controller and adds it to the Manager with default RBAC. The Manager will set fields on the Controller
 // and Start it when the Manager is Started.
 func Add(ctx context.Context, c *appconfig.CompletedConfig, mgr manager.Manager) error {
-	return add(mgr, newReconciler(mgr))
+	return add(mgr, c, newReconciler(mgr))
 }
 
 var _ reconcile.Reconciler = &ReconcileService{}
@@ -96,23 +97,23 @@ func newReconciler(mgr manager.Manager) reconcile.Reconciler {
 }
 
 // add adds a new Controller to mgr with r as the reconcile.Reconciler
-func add(mgr manager.Manager, r reconcile.Reconciler) error {
+func add(mgr manager.Manager, cfg *appconfig.CompletedConfig, r reconcile.Reconciler) error {
 	// Create a new controller
 	c, err := controller.New(names.GatewayPublicServiceController, mgr, controller.Options{
-		Reconciler: r, MaxConcurrentReconciles: util.ConcurrentReconciles,
+		Reconciler: r, MaxConcurrentReconciles: int(cfg.ComponentConfig.GatewayPublicSvcController.ConcurrentGatewayPublicSvcWorkers),
 	})
 	if err != nil {
 		return err
 	}
 
 	// Watch for changes to Gateway
-	err = c.Watch(source.Kind(mgr.GetCache(), &ravenv1beta1.Gateway{}), &EnqueueRequestForGatewayEvent{})
+	err = c.Watch(source.Kind[client.Object](mgr.GetCache(), &ravenv1beta1.Gateway{}, &EnqueueRequestForGatewayEvent{}))
 	if err != nil {
 		return err
 	}
 
 	//Watch for changes to raven agent
-	err = c.Watch(source.Kind(mgr.GetCache(), &corev1.ConfigMap{}), &EnqueueRequestForConfigEvent{client: yurtClient.GetClientByControllerNameOrDie(mgr, names.GatewayPublicServiceController)}, predicate.NewPredicateFuncs(
+	err = c.Watch(source.Kind[client.Object](mgr.GetCache(), &corev1.ConfigMap{}, &EnqueueRequestForConfigEvent{client: yurtClient.GetClientByControllerNameOrDie(mgr, names.GatewayPublicServiceController)}, predicate.NewPredicateFuncs(
 		func(object client.Object) bool {
 			cm, ok := object.(*corev1.ConfigMap)
 			if !ok {
@@ -126,7 +127,7 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 			}
 			return true
 		},
-	))
+	)))
 	if err != nil {
 		return err
 	}
@@ -155,13 +156,13 @@ func (r *ReconcileService) Reconcile(ctx context.Context, req reconcile.Request)
 	}
 	svcRecord := newServiceRecord()
 	if err := r.reconcileService(ctx, gw.DeepCopy(), svcRecord, enableTunnel, enableProxy); err != nil {
-		err = fmt.Errorf(Format("unable to reconcile service: %s", err))
+		err = fmt.Errorf("unable to reconcile service: %s", err)
 		klog.Error(err.Error())
 		return reconcile.Result{Requeue: true, RequeueAfter: 2 * time.Second}, err
 	}
 
 	if err := r.reconcileEndpoints(ctx, gw.DeepCopy(), svcRecord, enableTunnel, enableProxy); err != nil {
-		err = fmt.Errorf(Format("unable to reconcile endpoint: %s", err))
+		err = fmt.Errorf("unable to reconcile endpoint: %s", err)
 		klog.Error(err.Error())
 		return reconcile.Result{Requeue: true, RequeueAfter: 2 * time.Second}, err
 	}
@@ -186,7 +187,6 @@ func recordServiceNames(services []corev1.Service, record *serviceRecord) {
 		}
 		record.write(formatKey(epName, epType), svc.GetName())
 	}
-	return
 }
 
 func (r *ReconcileService) reconcileService(ctx context.Context, gw *ravenv1beta1.Gateway, record *serviceRecord, enableTunnel, enableProxy bool) error {
@@ -461,7 +461,7 @@ func (r *ReconcileService) getEndpointsAddress(ctx context.Context, name string)
 	var node corev1.Node
 	err := r.Get(ctx, types.NamespacedName{Name: name}, &node)
 	if err != nil {
-		klog.Errorf(Format("could not get node %s for get active endpoints address, error %s", name, err.Error()))
+		klog.Error(Format("could not get node %s for get active endpoints address, error %s", name, err.Error()))
 		return nil, err
 	}
 	return &corev1.EndpointAddress{NodeName: func(n corev1.Node) *string { return &n.Name }(node), IP: util.GetNodeInternalIP(node)}, nil
@@ -569,7 +569,13 @@ func classifyService(current, spec *corev1.ServiceList) (added, updated, deleted
 		if key := getKey(&val); key != "" {
 			if idx, ok := r[key]; ok {
 				updatedService := current.Items[idx].DeepCopy()
-				updatedService.Spec = *val.Spec.DeepCopy()
+				// Only update mutable fields from the desired spec.
+				// Preserve Kubernetes-managed immutable fields (ClusterIP, ClusterIPs,
+				// IPFamilies, IPFamilyPolicy, HealthCheckNodePort, SessionAffinity, etc.)
+				// that are assigned by the API server after Service creation.
+				updatedService.Spec.Type = val.Spec.Type
+				updatedService.Spec.ExternalTrafficPolicy = val.Spec.ExternalTrafficPolicy
+				updatedService.Spec.Ports = val.Spec.DeepCopy().Ports
 				updated = append(updated, updatedService)
 				delete(r, key)
 			} else {

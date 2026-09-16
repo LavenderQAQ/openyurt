@@ -37,7 +37,6 @@ import (
 	yurtutil "github.com/openyurtio/openyurt/pkg/util"
 	manager "github.com/openyurtio/openyurt/pkg/yurthub/cachemanager"
 	hubmeta "github.com/openyurtio/openyurt/pkg/yurthub/kubernetes/meta"
-	"github.com/openyurtio/openyurt/pkg/yurthub/proxy/util"
 	"github.com/openyurtio/openyurt/pkg/yurthub/storage"
 	hubutil "github.com/openyurtio/openyurt/pkg/yurthub/util"
 )
@@ -51,19 +50,17 @@ type IsHealthy func() bool
 
 // LocalProxy is responsible for handling requests when remote servers are unhealthy
 type LocalProxy struct {
-	cacheMgr           manager.CacheManager
-	isCloudHealthy     IsHealthy
-	isCoordinatorReady IsHealthy
-	minRequestTimeout  time.Duration
+	cacheMgr          manager.CacheManager
+	isCloudHealthy    IsHealthy
+	minRequestTimeout time.Duration
 }
 
 // NewLocalProxy creates a *LocalProxy
-func NewLocalProxy(cacheMgr manager.CacheManager, isCloudHealthy IsHealthy, isCoordinatorHealthy IsHealthy, minRequestTimeout time.Duration) *LocalProxy {
+func NewLocalProxy(cacheMgr manager.CacheManager, isCloudHealthy IsHealthy, minRequestTimeout time.Duration) *LocalProxy {
 	return &LocalProxy{
-		cacheMgr:           cacheMgr,
-		isCloudHealthy:     isCloudHealthy,
-		isCoordinatorReady: isCoordinatorHealthy,
-		minRequestTimeout:  minRequestTimeout,
+		cacheMgr:          cacheMgr,
+		isCloudHealthy:    isCloudHealthy,
+		minRequestTimeout: minRequestTimeout,
 	}
 }
 
@@ -86,18 +83,23 @@ func (lp *LocalProxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 		if err != nil {
 			klog.Errorf("could not proxy local for %s, %v", hubutil.ReqString(req), err)
-			util.Err(err, w, req)
+			hubutil.Err(err, w, req)
 		}
 	} else {
 		klog.Errorf("local proxy does not support request(%s), requestInfo: %s", hubutil.ReqString(req), hubutil.ReqInfoString(reqInfo))
-		util.Err(apierrors.NewBadRequest(fmt.Sprintf("local proxy does not support request(%s)", hubutil.ReqString(req))), w, req)
+		hubutil.Err(apierrors.NewBadRequest(fmt.Sprintf("local proxy does not support request(%s)", hubutil.ReqString(req))), w, req)
 	}
 }
 
 // localDelete handles Delete requests when remote servers are unhealthy
 func localDelete(w http.ResponseWriter, req *http.Request) error {
 	ctx := req.Context()
-	info, _ := apirequest.RequestInfoFrom(ctx)
+	info, ok := apirequest.RequestInfoFrom(ctx)
+	if !ok || info == nil {
+		klog.Errorf("request info not found for delete request %s", hubutil.ReqString(req))
+		return apierrors.NewInternalError(fmt.Errorf("request info not found"))
+	}
+
 	s := &metav1.Status{
 		Status: metav1.StatusFailure,
 		Code:   http.StatusForbidden,
@@ -110,8 +112,7 @@ func localDelete(w http.ResponseWriter, req *http.Request) error {
 		Message: "delete request is not supported in local cache",
 	}
 
-	util.WriteObject(http.StatusForbidden, s, w, req)
-	return nil
+	return hubutil.WriteObject(http.StatusForbidden, s, w, req)
 }
 
 // localPost handles Create requests when remote servers are unhealthy
@@ -119,7 +120,11 @@ func (lp *LocalProxy) localPost(w http.ResponseWriter, req *http.Request) error 
 	var buf bytes.Buffer
 
 	ctx := req.Context()
-	info, _ := apirequest.RequestInfoFrom(ctx)
+	info, ok := apirequest.RequestInfoFrom(ctx)
+	if !ok || info == nil {
+		klog.Errorf("request info not found for post request %s", hubutil.ReqString(req))
+		return apierrors.NewInternalError(fmt.Errorf("request info not found"))
+	}
 	reqContentType, _ := hubutil.ReqContentTypeFrom(ctx)
 	if info.Resource == "events" && len(reqContentType) != 0 {
 		ctx = hubutil.WithRespContentType(ctx, reqContentType)
@@ -133,7 +138,7 @@ func (lp *LocalProxy) localPost(w http.ResponseWriter, req *http.Request) error 
 		req.Body = rc
 	}
 
-	headerNStr := req.Header.Get(yurtutil.HttpHeaderContentLength)
+	headerNStr := req.Header.Get(yurtutil.HTTPHeaderContentLength)
 	headerN, _ := strconv.Atoi(headerNStr)
 	n, err := buf.ReadFrom(req.Body)
 	if err != nil || (headerN != 0 && int(n) != headerN) {
@@ -172,8 +177,8 @@ func (lp *LocalProxy) localWatch(w http.ResponseWriter, req *http.Request) error
 
 	ctx := req.Context()
 	contentType, _ := hubutil.ReqContentTypeFrom(ctx)
-	w.Header().Set(yurtutil.HttpHeaderContentType, contentType)
-	w.Header().Set(yurtutil.HttpHeaderTransferEncoding, "chunked")
+	w.Header().Set(yurtutil.HTTPHeaderContentType, contentType)
+	w.Header().Set(yurtutil.HTTPHeaderTransferEncoding, "chunked")
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
@@ -185,7 +190,6 @@ func (lp *LocalProxy) localWatch(w http.ResponseWriter, req *http.Request) error
 		timeout = time.Duration(float64(lp.minRequestTimeout) * (rand.Float64() + 1.0))
 	}
 
-	isPoolScopedListWatch := util.IsPoolScopedResouceListWatchRequest(req)
 	watchTimer := time.NewTimer(timeout)
 	intervalTicker := time.NewTicker(interval)
 	defer watchTimer.Stop()
@@ -203,11 +207,6 @@ func (lp *LocalProxy) localWatch(w http.ResponseWriter, req *http.Request) error
 			if lp.isCloudHealthy() {
 				return nil
 			}
-
-			// if yurtcoordinator becomes healthy, exit the watch wait
-			if isPoolScopedListWatch && lp.isCoordinatorReady() {
-				return nil
-			}
 		}
 	}
 }
@@ -222,7 +221,10 @@ func (lp *LocalProxy) localReqCache(w http.ResponseWriter, req *http.Request) er
 	obj, err := lp.cacheMgr.QueryCache(req)
 	if errors.Is(err, storage.ErrStorageNotFound) || errors.Is(err, hubmeta.ErrGVRNotRecognized) {
 		klog.Errorf("object not found for %s", hubutil.ReqString(req))
-		reqInfo, _ := apirequest.RequestInfoFrom(req.Context())
+		reqInfo, ok := apirequest.RequestInfoFrom(req.Context())
+		if !ok || reqInfo == nil {
+			return apierrors.NewInternalError(fmt.Errorf("request info not found"))
+		}
 		return apierrors.NewNotFound(schema.GroupResource{Group: reqInfo.APIGroup, Resource: reqInfo.Resource}, reqInfo.Name)
 	} else if err != nil {
 		klog.Errorf("could not query cache for %s, %v", hubutil.ReqString(req), err)
@@ -232,12 +234,12 @@ func (lp *LocalProxy) localReqCache(w http.ResponseWriter, req *http.Request) er
 		return apierrors.NewInternalError(fmt.Errorf("no cache object for %s", hubutil.ReqString(req)))
 	}
 
-	return util.WriteObject(http.StatusOK, obj, w, req)
+	return hubutil.WriteObject(http.StatusOK, obj, w, req)
 }
 
 func copyHeader(dst, src http.Header) {
 	for k, vv := range src {
-		if k == yurtutil.HttpHeaderContentType || k == yurtutil.HttpHeaderContentLength {
+		if k == yurtutil.HTTPHeaderContentType || k == yurtutil.HTTPHeaderContentLength {
 			for _, v := range vv {
 				dst.Add(k, v)
 			}

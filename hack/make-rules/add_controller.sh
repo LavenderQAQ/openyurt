@@ -319,7 +319,7 @@ type ${KIND_FIRST_UPPER}Status struct {
 // +k8s:openapi-gen=true
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=${SCOPE},path=${KIND_PLURAL},shortName=${SHORTNAME},categories=all
+// +kubebuilder:resource:scope=${SCOPE},path=${KIND_PLURAL},shortName=${SHORTNAME},categories=yurt
 // +kubebuilder:printcolumn:name="AGE",type="date",JSONPath=".metadata.creationTimestamp",description="CreationTimestamp is a timestamp representing the server time when this object was created. It is not guaranteed to be set in happens-before order across separate operations. Clients may not set this value. It is represented in RFC3339 form and is in UTC."
 
 // ${KIND_FIRST_UPPER} is the Schema for the samples API
@@ -422,7 +422,7 @@ func Format(format string, args ...interface{}) string {
 // Add creates a new ${KIND_FIRST_UPPER} Controller and adds it to the Manager with default RBAC. The Manager will set fields on the Controller
 // and Start it when the Manager is Started.
 func Add(ctx context.Context, c *appconfig.CompletedConfig, mgr manager.Manager) error {
-	klog.Infof(Format("${KIND_ALL_LOWER}-controller add controller %s", controllerKind.String()))
+	klog.Info(Format("${KIND_ALL_LOWER}-controller add controller %s", controllerKind.String()))
 	return add(mgr, newReconciler(c, mgr))
 }
 
@@ -433,7 +433,7 @@ type Reconcile${KIND_FIRST_UPPER} struct {
 	client.Client
 	scheme   *runtime.Scheme
 	recorder record.EventRecorder
-	Configration config.${KIND_FIRST_UPPER}ControllerConfiguration
+	Configuration config.${KIND_FIRST_UPPER}ControllerConfiguration
 }
 
 // newReconciler returns a new reconcile.Reconciler
@@ -442,7 +442,7 @@ func newReconciler(c *appconfig.CompletedConfig, mgr manager.Manager) reconcile.
 		Client:   mgr.GetClient(),
 		scheme:   mgr.GetScheme(),
 		recorder: mgr.GetEventRecorderFor(controllerName),
-        Configration: c.ComponentConfig.${KIND_FIRST_UPPER}Controller,
+        Configuration: c.ComponentConfig.${KIND_FIRST_UPPER}Controller,
 	}
 }
 
@@ -475,7 +475,7 @@ func (r *Reconcile${KIND_FIRST_UPPER}) Reconcile(_ context.Context, request reco
 	// Note !!!!!!!!!!
 	// We strongly recommend use Format() to  encapsulation because Format() can print logs by module
 	// @kadisi
-	klog.Infof(Format("Reconcile ${KIND_FIRST_UPPER} %s/%s", request.Namespace, request.Name))
+	klog.Info(Format("Reconcile ${KIND_FIRST_UPPER} %s/%s", request.Namespace, request.Name))
 
 	// Fetch the ${KIND_FIRST_UPPER} instance
 	instance := &${GROUP}${VERSION}.${KIND_FIRST_UPPER}{}
@@ -495,14 +495,14 @@ func (r *Reconcile${KIND_FIRST_UPPER}) Reconcile(_ context.Context, request reco
 	if instance.Spec.Foo != instance.Status.Foo {
 		instance.Status.Foo = instance.Spec.Foo
 		if err = r.Status().Update(context.TODO(), instance); err != nil {
-			klog.Errorf(Format("Update ${KIND_FIRST_UPPER} Status %s error %v", klog.KObj(instance), err))
+			klog.Error(Format("Update ${KIND_FIRST_UPPER} Status %s error %v", klog.KObj(instance), err))
 			return reconcile.Result{Requeue: true}, err
 		}
 	}
 
 	// Update Instance
 	//if err = r.Update(context.TODO(), instance); err != nil {
-	//	klog.Errorf(Format("Update ${KIND_FIRST_UPPER} %s error %v", klog.KObj(instance), err))
+	//	klog.Error(Format("Update ${KIND_FIRST_UPPER} %s error %v", klog.KObj(instance), err))
 	//	return reconcile.Result{Requeue: true}, err
 	//}
 

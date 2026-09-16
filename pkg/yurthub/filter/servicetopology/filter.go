@@ -20,11 +20,10 @@ import (
 	"context"
 
 	v1 "k8s.io/api/core/v1"
-	discovery "k8s.io/api/discovery/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	discoveryV1beta1 "k8s.io/api/discovery/v1beta1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	listers "k8s.io/client-go/listers/core/v1"
@@ -73,11 +72,16 @@ func (stf *serviceTopologyFilter) Name() string {
 	return FilterName
 }
 
-func (stf *serviceTopologyFilter) SupportedResourceAndVerbs() map[string]sets.Set[string] {
-	return map[string]sets.Set[string]{
-		"endpoints":      sets.New("list", "watch"),
-		"endpointslices": sets.New("list", "watch"),
+func (stf *serviceTopologyFilter) HasSynced() bool {
+	if stf.nodesSynced == nil || stf.serviceSynced == nil {
+		return false
 	}
+
+	if !stf.nodesSynced() || !stf.serviceSynced() {
+		return false
+	}
+
+	return true
 }
 
 func (stf *serviceTopologyFilter) SetSharedInformerFactory(factory informers.SharedInformerFactory) error {
@@ -125,12 +129,8 @@ func (stf *serviceTopologyFilter) resolveNodePoolName() string {
 }
 
 func (stf *serviceTopologyFilter) Filter(obj runtime.Object, stopCh <-chan struct{}) runtime.Object {
-	if ok := cache.WaitForCacheSync(stopCh, stf.serviceSynced, stf.nodesSynced); !ok {
-		return obj
-	}
-
 	switch v := obj.(type) {
-	case *v1.Endpoints, *discoveryV1beta1.EndpointSlice, *discovery.EndpointSlice:
+	case *discoveryV1beta1.EndpointSlice, *discoveryv1.EndpointSlice:
 		return stf.serviceTopologyHandler(v)
 	default:
 		return obj
@@ -164,12 +164,9 @@ func (stf *serviceTopologyFilter) resolveServiceTopologyType(obj runtime.Object)
 	case *discoveryV1beta1.EndpointSlice:
 		svcNamespace = v.Namespace
 		svcName = v.Labels[discoveryV1beta1.LabelServiceName]
-	case *discovery.EndpointSlice:
+	case *discoveryv1.EndpointSlice:
 		svcNamespace = v.Namespace
-		svcName = v.Labels[discovery.LabelServiceName]
-	case *v1.Endpoints:
-		svcNamespace = v.Namespace
-		svcName = v.Name
+		svcName = v.Labels[discoveryv1.LabelServiceName]
 	default:
 		return ""
 	}
@@ -190,10 +187,8 @@ func (stf *serviceTopologyFilter) nodeTopologyHandler(obj runtime.Object) runtim
 	switch v := obj.(type) {
 	case *discoveryV1beta1.EndpointSlice:
 		return reassembleV1beta1EndpointSlice(v, stf.nodeName, nil)
-	case *discovery.EndpointSlice:
+	case *discoveryv1.EndpointSlice:
 		return reassembleEndpointSlice(v, stf.nodeName, nil)
-	case *v1.Endpoints:
-		return reassembleEndpoints(v, stf.nodeName, nil)
 	default:
 		return obj
 	}
@@ -215,10 +210,8 @@ func (stf *serviceTopologyFilter) nodePoolTopologyHandler(obj runtime.Object) ru
 	switch v := obj.(type) {
 	case *discoveryV1beta1.EndpointSlice:
 		return reassembleV1beta1EndpointSlice(v, "", nodes)
-	case *discovery.EndpointSlice:
+	case *discoveryv1.EndpointSlice:
 		return reassembleEndpointSlice(v, "", nodes)
-	case *v1.Endpoints:
-		return reassembleEndpoints(v, "", nodes)
 	default:
 		return obj
 	}
@@ -252,14 +245,23 @@ func reassembleV1beta1EndpointSlice(endpointSlice *discoveryV1beta1.EndpointSlic
 }
 
 // reassembleEndpointSlice will discard endpoints that are not on the same node/nodePool for v1.EndpointSlice
-func reassembleEndpointSlice(endpointSlice *discovery.EndpointSlice, nodeName string, nodes []string) *discovery.EndpointSlice {
+func reassembleEndpointSlice(endpointSlice *discoveryv1.EndpointSlice, nodeName string, nodes []string) *discoveryv1.EndpointSlice {
 	if len(nodeName) != 0 && len(nodes) != 0 {
 		klog.Warningf("reassembleEndpointSlice: nodeName(%s) and nodePool can not be set at the same time", nodeName)
 		return endpointSlice
 	}
 
-	var newEps []discovery.Endpoint
+	var newEps []discoveryv1.Endpoint
 	for i := range endpointSlice.Endpoints {
+		// Endpoint.NodeName is an optional field, so it may be nil for endpoints
+		// whose hosting node is unknown (e.g. externalName or headless backends).
+		// Such endpoints can not be located to a node/nodePool, so they are
+		// discarded here, consistent with the v1beta1 topology handling where a
+		// missing hostname never matches the local node/nodePool.
+		if endpointSlice.Endpoints[i].NodeName == nil {
+			continue
+		}
+
 		if len(nodeName) != 0 {
 			if *endpointSlice.Endpoints[i].NodeName == nodeName {
 				newEps = append(newEps, endpointSlice.Endpoints[i])
@@ -276,59 +278,6 @@ func reassembleEndpointSlice(endpointSlice *discovery.EndpointSlice, nodeName st
 	// even no endpoints left, empty endpoints slice should be returned
 	endpointSlice.Endpoints = newEps
 	return endpointSlice
-}
-
-// reassembleEndpoints will discard subset that are not on the same node/nodePool for v1.Endpoints
-func reassembleEndpoints(endpoints *v1.Endpoints, nodeName string, nodes []string) *v1.Endpoints {
-	if len(nodeName) != 0 && len(nodes) != 0 {
-		klog.Warningf("reassembleEndpoints: nodeName(%s) and nodePool can not be set at the same time", nodeName)
-		return endpoints
-	}
-
-	var newEpSubsets []v1.EndpointSubset
-	for i := range endpoints.Subsets {
-		if len(nodeName) != 0 {
-			endpoints.Subsets[i].Addresses = filterValidEndpointsAddr(endpoints.Subsets[i].Addresses, nodeName, nil)
-			endpoints.Subsets[i].NotReadyAddresses = filterValidEndpointsAddr(endpoints.Subsets[i].NotReadyAddresses, nodeName, nil)
-		}
-
-		if len(nodes) != 0 {
-			endpoints.Subsets[i].Addresses = filterValidEndpointsAddr(endpoints.Subsets[i].Addresses, "", nodes)
-			endpoints.Subsets[i].NotReadyAddresses = filterValidEndpointsAddr(endpoints.Subsets[i].NotReadyAddresses, "", nodes)
-		}
-
-		if len(endpoints.Subsets[i].Addresses) != 0 || len(endpoints.Subsets[i].NotReadyAddresses) != 0 {
-			newEpSubsets = append(newEpSubsets, endpoints.Subsets[i])
-		}
-	}
-
-	// even no subsets left, empty subset slice should be returned
-	endpoints.Subsets = newEpSubsets
-	return endpoints
-}
-
-func filterValidEndpointsAddr(addresses []v1.EndpointAddress, nodeName string, nodes []string) []v1.EndpointAddress {
-	var newEpAddresses []v1.EndpointAddress
-	for i := range addresses {
-		if addresses[i].NodeName == nil {
-			continue
-		}
-
-		// filter address on the same node
-		if len(nodeName) != 0 {
-			if nodeName == *addresses[i].NodeName {
-				newEpAddresses = append(newEpAddresses, addresses[i])
-			}
-		}
-
-		// filter address on the same node pool
-		if len(nodes) != 0 {
-			if inSameNodePool(*addresses[i].NodeName, nodes) {
-				newEpAddresses = append(newEpAddresses, addresses[i])
-			}
-		}
-	}
-	return newEpAddresses
 }
 
 func inSameNodePool(nodeName string, nodeList []string) bool {

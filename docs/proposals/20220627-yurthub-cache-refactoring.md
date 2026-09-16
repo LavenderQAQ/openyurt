@@ -12,32 +12,32 @@ status: provisional
 # Yurthub Cache Model Refactoring
 
 - [Yurthub Cache Model Refactoring](#yurthub-cache-model-refactoring)
-  - [1. Summary](#1-summary)
-  - [2. Motivation](#2-motivation)
-  - [3. Problems of Current Cache Structure](#3-problems-of-current-cache-structure)
-    - [3.1 Coupling between Cache Policy and Storage Implementation](#31-coupling-between-cache-policy-and-storage-implementation)
-      - [3.1.1 update object in the Store but compare rv in the CacheManager](#311-update-object-in-the-store-but-compare-rv-in-the-cachemanager)
-      - [3.1.2 key of object depends on the DiskStorage implementation](#312-key-of-object-depends-on-the-diskstorage-implementation)
-      - [3.1.3 storage recycling when deleting cache-agent depends on the DiskStorage implementation](#313-storage-recycling-when-deleting-cache-agent-depends-on-the-diskstorage-implementation)
-      - [3.1.4 the implementation of saving list objects depends on the DiskStorage implementation](#314-the-implementation-of-saving-list-objects-depends-on-the-diskstorage-implementation)
-    - [3.2 Definition of Store Interface is not explicit](#32-definition-of-store-interface-is-not-explicit)
-      - [3.2.1 Operations of Create and Update are mixed](#321-operations-of-create-and-update-are-mixed)
-      - [3.2.2 Definition of DeleteCollection is not explicit](#322-definition-of-deletecollection-is-not-explicit)
-    - [3.3 Responsibility of each cache-related component is not explicit](#33-responsibility-of-each-cache-related-component-is-not-explicit)
-      - [3.3.1 StorageWrapper should not care about in-memory cache](#331-storagewrapper-should-not-care-about-in-memory-cache)
-      - [3.3.2 CacheManager should not care about the key format](#332-cachemanager-should-not-care-about-the-key-format)
-    - [3.4 Non-cache Related Components Should not Use Storage](#34-non-cache-related-components-should-not-use-storage)
-  - [4. Cache Ability Enhancement](#4-cache-ability-enhancement)
-    - [4.1 Enable Yurthub to Distinguish resources with same name but different versions and groups](#41-enable-yurthub-to-distinguish-resources-with-same-name-but-different-versions-and-groups)
-    - [4.2 Avoid Watch Request Flood When Yurthub offline](#42-avoid-watch-request-flood-when-yurthub-offline)
-    - [4.3 Added New Interfaces for Storage to Handle ClusterInfo Requests](#43-added-new-interfaces-for-storage-to-handle-clusterinfo-requests)
-  - [5. Yurthub Cache Model Proposal](#5-yurthub-cache-model-proposal)
-    - [5.1 Description of Cache Model](#51-description-of-cache-model)
-    - [5.2 Process of Cache](#52-process-of-cache)
-  - [6. Implementation Details](#6-implementation-details)
-    - [6.1 Definition of Store Interface](#61-definition-of-store-interface)
-    - [6.2 Implementation of FS Operator](#62-implementation-of-fs-operator)
-  - [7. How to solve the above problems](#7-how-to-solve-the-above-problems)
+	- [1. Summary](#1-summary)
+	- [2. Motivation](#2-motivation)
+	- [3. Problems of Current Cache Structure](#3-problems-of-current-cache-structure)
+		- [3.1 Coupling between Cache Policy and Storage Implementation](#31-coupling-between-cache-policy-and-storage-implementation)
+			- [3.1.1 update object in the Store but compare rv in the CacheManager](#311-update-object-in-the-store-but-compare-rv-in-the-cachemanager)
+			- [3.1.2 key of object depends on the DiskStorage implementation](#312-key-of-object-depends-on-the-diskstorage-implementation)
+			- [3.1.3 storage recycling when deleting cache-agent depends on the DiskStorage implementation](#313-storage-recycling-when-deleting-cache-agent-depends-on-the-diskstorage-implementation)
+			- [3.1.4 the implementation of saving list objects depends on the DiskStorage implementation](#314-the-implementation-of-saving-list-objects-depends-on-the-diskstorage-implementation)
+		- [3.2 Definition of Store Interface is not explicit](#32-definition-of-store-interface-is-not-explicit)
+			- [3.2.1 Operations of Create and Update are mixed](#321-operations-of-create-and-update-are-mixed)
+			- [3.2.2 Definition of DeleteCollection is not explicit](#322-definition-of-deletecollection-is-not-explicit)
+		- [3.3 Responsibility of each cache-related component is not explicit](#33-responsibility-of-each-cache-related-component-is-not-explicit)
+			- [3.3.1 StorageWrapper should not care about in-memory cache](#331-storagewrapper-should-not-care-about-in-memory-cache)
+			- [3.3.2 CacheManager should not care about the key format](#332-cachemanager-should-not-care-about-the-key-format)
+		- [3.4 Non-cache Related Components Should not Use Storage](#34-non-cache-related-components-should-not-use-storage)
+	- [4. Cache Ability Enhancement](#4-cache-ability-enhancement)
+		- [4.1 Enable Yurthub to Distinguish resources with same name but different versions and groups](#41-enable-yurthub-to-distinguish-resources-with-same-name-but-different-versions-and-groups)
+		- [4.2 Avoid Watch Request Flood When Yurthub offline](#42-avoid-watch-request-flood-when-yurthub-offline)
+		- [4.3 Added New Interfaces for Storage to Handle ClusterInfo Requests](#43-added-new-interfaces-for-storage-to-handle-clusterinfo-requests)
+	- [5. Yurthub Cache Model Proposal](#5-yurthub-cache-model-proposal)
+		- [5.1 Description of Cache Model](#51-description-of-cache-model)
+		- [5.2 Process of Cache](#52-process-of-cache)
+	- [6. Implementation Details](#6-implementation-details)
+		- [6.1 Definition of Store Interface](#61-definition-of-store-interface)
+		- [6.2 Implementation of FS Operator](#62-implementation-of-fs-operator)
+	- [7. How to solve the above problems](#7-how-to-solve-the-above-problems)
 
 ## 1. Summary
 
@@ -62,7 +62,7 @@ In the current implementation, when updating the object in the storage, CacheMan
 
 #### 3.1.2 key of object depends on the DiskStorage implementation
 
-Currently, the key of object used in CacheManager is generated through `util.KeyFunc`, in the format of `component/resources/namesapce/name` which can only be recognized by DiskStorage. In Yurt-Coordinator, the key format should be `/registry/resources/namespace/name`, otherwise it cannot be recognized by the APIServer. It's obvious that `util.KeyFunc` is not generic for all storages.
+Currently, the key of object used in CacheManager is generated through `util.KeyFunc`, in the format of `component/resources/namespace/name` which can only be recognized by DiskStorage. In Yurt-Coordinator, the key format should be `/registry/resources/namespace/name`, otherwise it cannot be recognized by the APIServer. It's obvious that `util.KeyFunc` is not generic for all storages.
 
 #### 3.1.3 storage recycling when deleting cache-agent depends on the DiskStorage implementation
 
@@ -70,7 +70,7 @@ When deleting a cache-agent, CacheManager should recycle the cache used by this 
 
 #### 3.1.4 the implementation of saving list objects depends on the DiskStorage implementation
 
-As described in [#265](https://github.com/openyurtio/openyurt/pull/265), each cache-agent can only have the cache of one type of list for one resource. Considering that if we update cache using items in list object one by one, it will result in some cache objects not being deleted. Thus, in `saveListObject`, it will replace all objects under the resource directory with the items in the response of the list request. It works well when the CacheManager uses DiskStorage, because cache for different components are stored at different directory, for example, service cache for kubelet is under `/etc/kubernetes/cache/kubelet/services`, service cache for kube-proxy is under `/etc/kubernetes/cache/kube-proxy/services`. Replacing the serivce cache of kubelet has no influence on service cache of kube-proxy. But when using Yurt-Coordinator storage, services for all components are cached under `/registry/services`, if replacing all the entries under `/registry/services` with items in the response of list request from kubelet, the service cache for kube-proxy will be overwritten.
+As described in [#265](https://github.com/openyurtio/openyurt/pull/265), each cache-agent can only have the cache of one type of list for one resource. Considering that if we update cache using items in list object one by one, it will result in some cache objects not being deleted. Thus, in `saveListObject`, it will replace all objects under the resource directory with the items in the response of the list request. It works well when the CacheManager uses DiskStorage, because cache for different components are stored at different directory, for example, service cache for kubelet is under `/etc/kubernetes/cache/kubelet/services`, service cache for kube-proxy is under `/etc/kubernetes/cache/kube-proxy/services`. Replacing the service cache of kubelet has no influence on service cache of kube-proxy. But when using Yurt-Coordinator storage, services for all components are cached under `/registry/services`, if replacing all the entries under `/registry/services` with items in the response of list request from kubelet, the service cache for kube-proxy will be overwritten.
 
 ### 3.2 Definition of Store Interface is not explicit
 
@@ -126,7 +126,7 @@ The **Policy layer** takes the responsibility of cache policy, including determi
 
 The **Serialization layer** takes the responsibility of serialization/unserialization of cached objects. The logic in this layer is related to Kubernetes APIMachinery. The byte formats it needs to concern include json, yaml and protobuf. The types of objects it needs to concern include kubernetes native resources and CRDs. Currently, the component in this layer is StorageWrapper.
 
-The **Storage Frontend** layer serves like a shim between the Serialization layer and Stroage Backend layer. It should provide interface to cache objects shielding the differences among different storages for the upper-layer. It also takes the responsibility of implementation of KeyFunc. Currently, the component in this layer is DiskStorage. We can add more storage in this layer later, such as Yurt-Coordinator Storage.
+The **Storage Frontend** layer serves like a shim between the Serialization layer and Storage Backend layer. It should provide interface to cache objects shielding the differences among different storages for the upper-layer. It also takes the responsibility of implementation of KeyFunc. Currently, the component in this layer is DiskStorage. We can add more storage in this layer later, such as Yurt-Coordinator Storage.
 
 The **Storage Backend layer** is the entity that interacts with the storage to complete the actual storage operation. It can be implemented by ourselves, such as FS Operator, or be provided by third-party, such as clientv3 pkg of etcd.
 
@@ -321,13 +321,13 @@ func (fs *FileSystemOperator) Rename(oldPath string, newPath string) error
 ## 7. How to solve the above problems
 
 | Problem | Solution                                                                                                                                                                                   |
-| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 3.1.1   | add rv parameter to Update func in Store interface, the storage will take the responsibility to compare the rv and update the cache, which makes it easy to implement tht atomic operation |
-| 3.1.2   |                                                                                                 |
+| ------- |--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| 3.1.1   | add rv parameter to Update func in Store interface, the storage will take the responsibility to compare the rv and update the cache, which makes it easy to implement the atomic operation |
+| 3.1.2   |                                                                                                                                                                                            |
 | 3.1.3   | use DeleteComponentResources instead of DeleteCollection, and pass the component name as argument rather than rootKey                                                                      |
 | 3.1.4   | use ReplaceComponentList instead of Replace, and pass component, resource, namespace as arguments rather than rootKey                                                                      |
 | 3.2.1   | distinguish the responsibility between Create and Update in Store interface                                                                                                                |
 | 3.2.2   | same as 3.1.3, explicitly define that DeleteComponentResources is used to delete the cache of the component                                                                                |
 | 3.3.1   | move the logic of in-memory cache from StorageWrapper to CacheManager                                                                                                                      |
 | 3.3.2   | same as 3.1.2                                                                                                                                                                              |
-| 3.4     | Other non-cache related components should use FS Opeartor instead of DiskStorage                                                                                                           |
+| 3.4     | Other non-cache related components should use FS Operator instead of DiskStorage                                                                                                           |

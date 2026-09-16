@@ -22,9 +22,13 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
+	"runtime"
 	"strings"
 	"time"
 
@@ -38,7 +42,290 @@ import (
 	"github.com/openyurtio/openyurt/pkg/util/token"
 	"github.com/openyurtio/openyurt/pkg/yurtadm/cmd/join/joindata"
 	"github.com/openyurtio/openyurt/pkg/yurtadm/constants"
+	yurtadmutil "github.com/openyurtio/openyurt/pkg/yurtadm/util"
+	"github.com/openyurtio/openyurt/pkg/yurtadm/util/edgenode"
 )
+
+var (
+	execCommand             = exec.Command
+	lookPath                = exec.LookPath
+	checkYurthubHealthzFunc = CheckYurthubHealthz
+	downloadFile            = yurtadmutil.DownloadFile
+	untar                   = yurtadmutil.Untar
+	copyFile                = edgenode.CopyFile
+
+	yurthubReleaseVersionRegexp    = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+$`)
+	yurthubVersionWithCommitRegexp = regexp.MustCompile(`^(v[0-9]+\.[0-9]+\.[0-9]+)-[0-9a-f]{7,40}$`)
+)
+
+func CheckAndInstallYurthub(yurthubVersion string) error {
+	if _, err := lookPath(yurthubExecStartPath); err == nil {
+		klog.Infof("Yurthub binary already exists, skip install.")
+		return nil
+	}
+
+	yurthubVersion, err := resolveYurthubReleaseVersion(yurthubVersion)
+	if err != nil {
+		return err
+	}
+	klog.Infof("Check and install yurthub %s", yurthubVersion)
+
+	packageName := fmt.Sprintf("yurthub-%s-linux-%s.tar.gz", yurthubVersion, runtime.GOARCH)
+	packageURL := fmt.Sprintf(constants.YurthubExecURLFormat, yurthubVersion, yurthubVersion, runtime.GOARCH)
+	tmpDir, err := os.MkdirTemp(constants.TmpDownloadDir, "yurthub-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmpDir)
+
+	savePath := filepath.Join(tmpDir, packageName)
+	klog.V(1).Infof("Download yurthub from: %s", packageURL)
+	if err := downloadFile(packageURL, savePath, 3); err != nil {
+		return fmt.Errorf("download yurthub fail: %w", err)
+	}
+	if err := untar(savePath, tmpDir); err != nil {
+		return fmt.Errorf("untar yurthub package fail: %w", err)
+	}
+
+	yurthubBinaryPath, err := findYurthubBinary(tmpDir)
+	if err != nil {
+		return err
+	}
+	if err := copyFile(yurthubBinaryPath, yurthubExecStartPath, 0755); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func resolveYurthubReleaseVersion(yurthubVersion string) (string, error) {
+	yurthubVersion = strings.TrimSpace(yurthubVersion)
+	if yurthubVersion != "v0.0.0" && yurthubReleaseVersionRegexp.MatchString(yurthubVersion) {
+		return yurthubVersion, nil
+	}
+
+	matches := yurthubVersionWithCommitRegexp.FindStringSubmatch(yurthubVersion)
+	if len(matches) == 2 && matches[1] != "v0.0.0" {
+		return matches[1], nil
+	}
+
+	return "", fmt.Errorf("can not parse yurthub release version from GitVersion %q, %s", yurthubVersion,
+		"please build yurtadm with release tag information, for example GitVersion=v1.7.0 or v1.7.0-<commit>")
+}
+
+func findYurthubBinary(root string) (string, error) {
+	var foundBinaryPath string
+	if err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() && info.Name() == constants.Yurthub {
+			foundBinaryPath = path
+			return io.EOF
+		}
+		return nil
+	}); err != nil && err != io.EOF {
+		return "", fmt.Errorf("error looking up %s: %w", constants.Yurthub, err)
+	}
+
+	if foundBinaryPath == "" {
+		return "", fmt.Errorf("no binary file named %q found in the archive", constants.Yurthub)
+	}
+
+	klog.V(1).Infof("Yurthub binary found: %s", foundBinaryPath)
+	return foundBinaryPath, nil
+}
+
+func setYurthubMainService(serviceDir string) error {
+	klog.Info("Setting yurthub main service.")
+
+	serviceFile := serviceDir + "/yurthub.service"
+
+	if _, err := os.Stat(serviceDir); err != nil {
+		if os.IsNotExist(err) {
+			if err := os.MkdirAll(serviceDir, os.ModePerm); err != nil {
+				klog.Errorf("Create dir %s fail: %v", serviceDir, err)
+				return err
+			}
+		} else {
+			klog.Errorf("Describe dir %s fail: %v", serviceDir, err)
+			return err
+		}
+	}
+
+	if err := os.WriteFile(serviceFile, []byte(constants.YurtHubServiceContent), 0644); err != nil {
+		klog.Errorf("Write file %s fail: %v", serviceFile, err)
+		return err
+	}
+
+	return nil
+}
+
+func setYurthubUnitService(hubUnitConfigDir string, data joindata.YurtJoinData) error {
+	return setYurthubUnitServiceWithConfig(hubUnitConfigDir, NewYurthubHostConfigFromJoinData(data))
+}
+
+func setYurthubUnitServiceWithConfig(hubUnitConfigDir string, cfg *YurthubHostConfig) error {
+	klog.Info("Setting yurthub unit service.")
+
+	if err := cfg.validateForSystemdService(); err != nil {
+		return err
+	}
+
+	ctx := map[string]string{
+		"bindAddress":   cfg.bindAddress(),
+		"bootstrapArgs": cfg.bootstrapArgs(),
+		"namespace":     cfg.namespace(),
+		"nodeName":      cfg.NodeName,
+		"serverAddr":    cfg.normalizedServerAddr(),
+		"workingMode":   cfg.WorkingMode,
+	}
+
+	if len(cfg.NodePoolName) != 0 {
+		ctx["nodePoolName"] = cfg.NodePoolName
+	}
+
+	unitContent, err := templates.SubstituteTemplate(constants.YurtHubUnitConfig, ctx)
+	if err != nil {
+		klog.Errorf("SubstituteTemplate error: %v", err)
+		return err
+	}
+
+	if _, err := os.Stat(hubUnitConfigDir); err != nil {
+		if os.IsNotExist(err) {
+			if err := os.MkdirAll(hubUnitConfigDir, os.ModePerm); err != nil {
+				klog.Errorf("Create dir %s fail: %v", hubUnitConfigDir, err)
+				return err
+			}
+		} else {
+			klog.Errorf("Describe dir %s fail: %v", hubUnitConfigDir, err)
+			return err
+		}
+	}
+
+	unitFile := filepath.Join(hubUnitConfigDir, filepath.Base(yurthubServiceConfFilePath))
+	if err := os.WriteFile(unitFile, []byte(unitContent), 0644); err != nil {
+		klog.Errorf("Write file %s fail: %v", unitFile, err)
+		return err
+	}
+
+	return nil
+}
+
+func CreateYurthubSystemdService(data joindata.YurtJoinData) error {
+	return CreateYurthubSystemdServiceWithConfig(NewYurthubHostConfigFromJoinData(data))
+}
+
+func CreateYurthubSystemdServiceWithConfig(cfg *YurthubHostConfig) error {
+	if err := setYurthubMainService(filepath.Dir(yurthubServiceFilePath)); err != nil {
+		return err
+	}
+
+	if err := setYurthubUnitServiceWithConfig(filepath.Dir(yurthubServiceConfFilePath), cfg); err != nil {
+		return err
+	}
+
+	if err := ReloadYurthubSystemdConfig(); err != nil {
+		return err
+	}
+
+	if err := EnableYurthubService(); err != nil {
+		return err
+	}
+
+	if err := StartYurthubService(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func ReloadYurthubSystemdConfig() error {
+	return runSystemctl("daemon-reload")
+}
+
+func EnableYurthubService() error {
+	return runSystemctl("enable", constants.YurtHubServiceName)
+}
+
+func StartYurthubService() error {
+	return runSystemctl("start", constants.YurtHubServiceName)
+}
+
+func StopYurthubService() error {
+	return runSystemctlWithIgnoredErrors([]string{"not loaded", "not found", "does not exist"}, "stop", constants.YurtHubServiceName)
+}
+
+func DisableYurthubService() error {
+	return runSystemctlWithIgnoredErrors([]string{"not loaded", "not found", "does not exist"}, "disable", constants.YurtHubServiceName)
+}
+
+func RemoveYurthubSystemdService() error {
+	if err := os.RemoveAll(yurthubServiceFilePath); err != nil {
+		return err
+	}
+
+	if err := os.RemoveAll(filepath.Dir(yurthubServiceConfFilePath)); err != nil {
+		return err
+	}
+
+	return ReloadYurthubSystemdConfig()
+}
+
+func RemoveYurthubBinary() error {
+	return os.RemoveAll(yurthubExecStartPath)
+}
+
+func CleanYurthubHostArtifacts() error {
+	if err := StopYurthubService(); err != nil {
+		return err
+	}
+	if err := DisableYurthubService(); err != nil {
+		return err
+	}
+	if err := RemoveYurthubSystemdService(); err != nil {
+		return err
+	}
+	if err := RemoveYurthubBinary(); err != nil {
+		return err
+	}
+	if err := CleanHubBootstrapConfig(); err != nil {
+		return err
+	}
+	if err := os.RemoveAll(yurthubWorkDirPath); err != nil {
+		return err
+	}
+	if err := os.RemoveAll(yurthubCacheDirPath); err != nil {
+		return err
+	}
+	return nil
+}
+
+func runSystemctl(args ...string) error {
+	return runSystemctlWithIgnoredErrors(nil, args...)
+}
+
+func runSystemctlWithIgnoredErrors(ignoredSubstrings []string, args ...string) error {
+	cmd := execCommand("systemctl", args...)
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		return nil
+	}
+
+	outputText := strings.ToLower(strings.TrimSpace(string(output)))
+	for _, ignoredSubstring := range ignoredSubstrings {
+		if strings.Contains(outputText, ignoredSubstring) {
+			klog.V(1).Infof("Ignore systemctl error, args=%v, output=%s", args, outputText)
+			return nil
+		}
+	}
+
+	if len(outputText) == 0 {
+		return err
+	}
+
+	return fmt.Errorf("%w: %s", err, outputText)
+}
 
 // AddYurthubStaticYaml generate YurtHub static yaml for worker node.
 func AddYurthubStaticYaml(data joindata.YurtJoinData, podManifestPath string) error {
@@ -75,7 +362,7 @@ func AddYurthubStaticYaml(data joindata.YurtJoinData, podManifestPath string) er
 		ctx["nodePoolName"] = data.NodeRegistration().NodePoolName
 	}
 
-	yurthubTemplate, err := templates.SubsituteTemplate(data.YurtHubTemplate(), ctx)
+	yurthubTemplate, err := templates.SubstituteTemplate(data.YurtHubTemplate(), ctx)
 	if err != nil {
 		return err
 	}
@@ -111,7 +398,13 @@ func SetHubBootstrapConfig(serverAddr string, joinToken string, caCertHashes []s
 			clusterInfo.CertificateAuthorityData,
 			joinToken,
 		)
-		if err = kubeconfigutil.WriteToDisk(constants.YurtHubBootstrapConfig, tlsBootstrapCfg); err != nil {
+
+		// make sure the parent directory of YurtHubBootstrapConfig exists
+		if err := os.MkdirAll(filepath.Dir(yurthubBootstrapConfigPath), os.ModePerm); err != nil {
+			return err
+		}
+
+		if err = kubeconfigutil.WriteToDisk(yurthubBootstrapConfigPath, tlsBootstrapCfg); err != nil {
 			return errors.Wrap(err, "couldn't save bootstrap-hub.conf to disk")
 		}
 	}
@@ -119,38 +412,47 @@ func SetHubBootstrapConfig(serverAddr string, joinToken string, caCertHashes []s
 	return nil
 }
 
-// CheckYurthubHealthz check if YurtHub is healthy.
-func CheckYurthubHealthz(yurthubServer string) error {
-	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://%s%s", fmt.Sprintf("%s:10267", yurthubServer), constants.ServerHealthzURLPath), nil)
-	if err != nil {
+func CheckYurthubServiceHealth(yurthubServer string) error {
+	cmd := execCommand("systemctl", "is-active", constants.YurtHubServiceName)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("yurthub service is not active: %v", err)
+	}
+
+	if err := checkYurthubHealthzFunc(yurthubServer); err != nil { // Here is the previous CheckYurthubHealthz, called in postcheck.go
 		return err
 	}
-	client := &http.Client{}
-	return wait.PollUntilContextTimeout(context.Background(), time.Second*5, 300*time.Second, true, func(ctx context.Context) (bool, error) {
-		resp, err := client.Do(req)
-		if err != nil {
-			return false, nil
-		}
-		ok, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return false, nil
-		}
-		return string(ok) == "OK", nil
-	})
+
+	return nil
+}
+
+// CheckYurthubHealthz check if YurtHub is healthy.
+func CheckYurthubHealthz(yurthubServer string) error {
+	url := fmt.Sprintf("http://%s%s", net.JoinHostPort(yurthubServer, "10267"), constants.ServerHealthzURLPath)
+	return pollYurthubEndpointOK(url, time.Second*5, 300*time.Second)
 }
 
 // CheckYurthubReadyz check if YurtHub's certificates are ready or not
 func CheckYurthubReadyz(yurthubServer string) error {
-	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://%s%s", fmt.Sprintf("%s:10267", yurthubServer), constants.ServerReadyzURLPath), nil)
-	if err != nil {
-		return err
-	}
-	client := &http.Client{}
-	return wait.PollUntilContextTimeout(context.Background(), time.Second*5, 300*time.Second, true, func(ctx context.Context) (bool, error) {
+	url := fmt.Sprintf("http://%s%s", net.JoinHostPort(yurthubServer, "10267"), constants.ServerReadyzURLPath)
+	return pollYurthubEndpointOK(url, time.Second*5, 300*time.Second)
+}
+
+func pollYurthubEndpointOK(url string, interval, timeout time.Duration) error {
+	// Bound each request with a client timeout that prevents a blackholed or
+	// stalled socket from hanging for the full poll window, while staying
+	// decoupled from the poll interval so slow-but-valid edge nodes don't trip
+	// a false negative. Outer poll cancellation still propagates via ctx.
+	client := &http.Client{Timeout: min(interval*3, timeout)}
+	return wait.PollUntilContextTimeout(context.Background(), interval, timeout, true, func(ctx context.Context) (bool, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return false, err
+		}
 		resp, err := client.Do(req)
 		if err != nil {
 			return false, nil
 		}
+		defer resp.Body.Close()
 		ok, err := io.ReadAll(resp.Body)
 		if err != nil {
 			return false, nil
@@ -160,7 +462,7 @@ func CheckYurthubReadyz(yurthubServer string) error {
 }
 
 func CheckYurthubReadyzOnce(yurthubServer string) bool {
-	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://%s%s", fmt.Sprintf("%s:10267", yurthubServer), constants.ServerReadyzURLPath), nil)
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://%s%s", net.JoinHostPort(yurthubServer, "10267"), constants.ServerReadyzURLPath), nil)
 	if err != nil {
 		return false
 	}
@@ -177,8 +479,8 @@ func CheckYurthubReadyzOnce(yurthubServer string) bool {
 }
 
 func CleanHubBootstrapConfig() error {
-	if err := os.RemoveAll(constants.YurtHubBootstrapConfig); err != nil {
-		klog.Warningf("Clean file %s fail: %v, please clean it manually.", constants.YurtHubBootstrapConfig, err)
+	if err := os.RemoveAll(yurthubBootstrapConfigPath); err != nil {
+		klog.Warningf("Clean file %s fail: %v, please clean it manually.", yurthubBootstrapConfigPath, err)
 	}
 	return nil
 }
@@ -188,12 +490,15 @@ func CleanHubBootstrapConfig() error {
 func useRealServerAddr(yurthubTemplate string, kubernetesServerAddrs string) (string, error) {
 	scanner := bufio.NewScanner(bytes.NewReader([]byte(yurthubTemplate)))
 	var buffer bytes.Buffer
-	target := fmt.Sprintf("%v=%v", constants.ServerAddr, constants.DefaultServerAddr)
+	// compile ipv4 regex
+	ipRegex := regexp.MustCompile(`https?://(?:[0-9]{1,3}\.){3}[0-9]{1,3}:\d+`)
 
+	// scan template and replace setAddr
 	for scanner.Scan() {
 		line := scanner.Text()
-		if strings.Contains(line, target) {
-			line = strings.Replace(line, constants.DefaultServerAddr, kubernetesServerAddrs, -1)
+		if strings.Contains(line, fmt.Sprintf("- --%s=", constants.ServerAddr)) {
+			// replace kubernetesServerAddrs by new addr
+			line = ipRegex.ReplaceAllString(line, kubernetesServerAddrs)
 		}
 		buffer.WriteString(line + "\n")
 	}

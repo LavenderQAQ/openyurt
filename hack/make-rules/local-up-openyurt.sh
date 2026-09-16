@@ -55,21 +55,20 @@ readonly REQUIRED_CMD=(
 readonly REQUIRED_IMAGES=(
     openyurt/node-servant
     openyurt/yurt-manager
-    openyurt/yurthub
     openyurt/yurt-iot-dock
 )
 
 readonly LOCAL_ARCH=$(go env GOHOSTARCH)
 readonly LOCAL_OS=$(go env GOHOSTOS)
 readonly CLUSTER_NAME="openyurt-e2e-test"
-readonly KUBERNETESVERSION=${KUBERNETESVERSION:-"v1.28"}
-readonly NODES_NUM=${NODES_NUM:-3}
+readonly KUBERNETESVERSION=${KUBERNETESVERSION:-"v1.34"}
+readonly NODES_NUM=${NODES_NUM:-5}
 readonly KIND_KUBECONFIG=${KIND_KUBECONFIG:-${HOME}/.kube/config}
 readonly DISABLE_DEFAULT_CNI=${DISABLE_DEFAULT_CNI:-"false"}
 
 function install_kind {
     echo "Begin to install kind"
-    GO111MODULE="on" go install sigs.k8s.io/kind@v0.22.0
+    GO111MODULE="on" go install sigs.k8s.io/kind@v0.31.0
 }
 
 function install_docker {
@@ -103,7 +102,7 @@ function preflight {
 
 # install gingko
 function get_ginkgo() {
-    go install github.com/onsi/ginkgo/v2/ginkgo@v2.1.4
+    go install github.com/onsi/ginkgo/v2/ginkgo@v2.22.2
 }
 
 function build_e2e_binary() {
@@ -121,8 +120,8 @@ function build_e2e_binary() {
       fi
     done
 
-    ginkgo build $YURT_ROOT/test/e2e \
-    --gcflags "${gcflags:-}" ${goflags} --ldflags "${goldflags}"
+    ginkgo build --gcflags "${gcflags:-}" --ldflags "${goldflags}" $YURT_ROOT/test/e2e
+
 }
 
 function local_up_openyurt {

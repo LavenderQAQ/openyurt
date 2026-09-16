@@ -215,20 +215,14 @@ func TestTaintSetFilter(t *testing.T) {
 		{
 			name: "Filter out nothing",
 			fn: func(t *v1.Taint) bool {
-				if t.Key == v1.TaintNodeUnschedulable {
-					return true
-				}
-				return false
+				return t.Key == v1.TaintNodeUnschedulable
 			},
 			expectedTaints: []v1.Taint{},
 		},
 		{
 			name: "Filter out a subset",
 			fn: func(t *v1.Taint) bool {
-				if t.Effect == v1.TaintEffectNoExecute {
-					return true
-				}
-				return false
+				return t.Effect == v1.TaintEffectNoExecute
 			},
 			expectedTaints: []v1.Taint{testTaint1},
 		},
@@ -739,7 +733,7 @@ func TestParseTaints(t *testing.T) {
 			t.Errorf("[%s] expected no error for spec %s, but got: %v", c.name, c.spec, err)
 		}
 		if !reflect.DeepEqual(c.expectedTaints, taints) {
-			t.Errorf("[%s] expected returen taints as %v, but got: %v", c.name, c.expectedTaints, taints)
+			t.Errorf("[%s] expected return taints as %v, but got: %v", c.name, c.expectedTaints, taints)
 		}
 		if !reflect.DeepEqual(c.expectedTaintsToRemove, taintsToRemove) {
 			t.Errorf("[%s] expected return taints to be removed as %v, but got: %v", c.name, c.expectedTaintsToRemove, taintsToRemove)

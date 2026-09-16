@@ -73,7 +73,7 @@ func Add(ctx context.Context, c *appconfig.CompletedConfig, mgr manager.Manager)
 		return err
 	}
 	klog.Infof("raven-gateway-controller add controller %s", controllerResource.String())
-	return add(mgr, newReconciler(c, mgr))
+	return add(mgr, c, newReconciler(c, mgr))
 }
 
 var _ reconcile.Reconciler = &ReconcileGateway{}
@@ -81,44 +81,44 @@ var _ reconcile.Reconciler = &ReconcileGateway{}
 // ReconcileGateway reconciles a Gateway object
 type ReconcileGateway struct {
 	client.Client
-	scheme       *runtime.Scheme
-	recorder     record.EventRecorder
-	Configration config.GatewayPickupControllerConfiguration
+	scheme        *runtime.Scheme
+	recorder      record.EventRecorder
+	Configuration config.GatewayPickupControllerConfiguration
 }
 
 // newReconciler returns a new reconcile.Reconciler
 func newReconciler(c *appconfig.CompletedConfig, mgr manager.Manager) reconcile.Reconciler {
 	return &ReconcileGateway{
-		Client:       yurtClient.GetClientByControllerNameOrDie(mgr, names.GatewayPickupController),
-		scheme:       mgr.GetScheme(),
-		recorder:     mgr.GetEventRecorderFor(names.GatewayPickupController),
-		Configration: c.ComponentConfig.GatewayPickupController,
+		Client:        yurtClient.GetClientByControllerNameOrDie(mgr, names.GatewayPickupController),
+		scheme:        mgr.GetScheme(),
+		recorder:      mgr.GetEventRecorderFor(names.GatewayPickupController),
+		Configuration: c.ComponentConfig.GatewayPickupController,
 	}
 }
 
 // add is used to add a new Controller to mgr
-func add(mgr manager.Manager, r reconcile.Reconciler) error {
+func add(mgr manager.Manager, cfg *appconfig.CompletedConfig, r reconcile.Reconciler) error {
 	// Create a new controller
 	c, err := controller.New(names.GatewayPickupController, mgr, controller.Options{
-		Reconciler: r, MaxConcurrentReconciles: util.ConcurrentReconciles,
+		Reconciler: r, MaxConcurrentReconciles: int(cfg.ComponentConfig.GatewayPickupController.ConcurrentGatewayPickupWorkers),
 	})
 	if err != nil {
 		return err
 	}
 
 	// Watch for changes to Gateway
-	err = c.Watch(source.Kind(mgr.GetCache(), &ravenv1beta1.Gateway{}), &handler.EnqueueRequestForObject{})
+	err = c.Watch(source.Kind[client.Object](mgr.GetCache(), &ravenv1beta1.Gateway{}, &handler.EnqueueRequestForObject{}))
 	if err != nil {
 		return err
 	}
 
 	// Watch for changes to Nodes
-	err = c.Watch(source.Kind(mgr.GetCache(), &corev1.Node{}), &EnqueueGatewayForNode{})
+	err = c.Watch(source.Kind[client.Object](mgr.GetCache(), &corev1.Node{}, &EnqueueGatewayForNode{}))
 	if err != nil {
 		return err
 	}
 
-	err = c.Watch(source.Kind(mgr.GetCache(), &corev1.ConfigMap{}), &EnqueueGatewayForRavenConfig{client: yurtClient.GetClientByControllerNameOrDie(mgr, names.GatewayPickupController)}, predicate.NewPredicateFuncs(
+	err = c.Watch(source.Kind[client.Object](mgr.GetCache(), &corev1.ConfigMap{}, &EnqueueGatewayForRavenConfig{client: yurtClient.GetClientByControllerNameOrDie(mgr, names.GatewayPickupController)}, predicate.NewPredicateFuncs(
 		func(object client.Object) bool {
 			cm, ok := object.(*corev1.ConfigMap)
 			if !ok {
@@ -131,7 +131,7 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 				return false
 			}
 			return true
-		}))
+		})))
 	if err != nil {
 		return err
 	}
@@ -227,7 +227,7 @@ func (r *ReconcileGateway) recordEndpointEvent(sourceObj *ravenv1beta1.Gateway, 
 	}
 }
 
-// electActiveEndpoint trys to elect an active Endpoint.
+// electActiveEndpoint tries to elect an active Endpoint.
 // If the current active endpoint remains valid, then we don't change it.
 // Otherwise, try to elect a new one.
 func (r *ReconcileGateway) electActiveEndpoint(nodeList corev1.NodeList, gw *ravenv1beta1.Gateway) []*ravenv1beta1.Endpoint {
@@ -238,9 +238,12 @@ func (r *ReconcileGateway) electActiveEndpoint(nodeList corev1.NodeList, gw *rav
 			readyNodes[v.Name] = &v
 		}
 	}
-	klog.V(1).Infof(Format("Ready node has %d, node %v", len(readyNodes), readyNodes))
+	klog.V(1).Info(Format("Ready node has %d, node %v", len(readyNodes), readyNodes))
 	// init a endpoints slice
-	enableProxy, enableTunnel := util.CheckServer(context.TODO(), r.Client)
+	globalEnableProxy, globalEnableTunnel := util.CheckServer(context.TODO(), r.Client)
+	enableProxy := util.GetBoolAnnotation(gw.Annotations, raven.AnnotationEnableProxy, globalEnableProxy)
+	enableTunnel := util.GetBoolAnnotation(gw.Annotations, raven.AnnotationEnableTunnel, globalEnableTunnel)
+
 	eps := make([]*ravenv1beta1.Endpoint, 0)
 	if enableProxy {
 		eps = append(eps, electEndpoints(gw, ravenv1beta1.Proxy, readyNodes)...)
@@ -285,12 +288,12 @@ func electEndpoints(gw *ravenv1beta1.Gateway, endpointType string, readyNodes ma
 	for _, aep := range candidates {
 		if len(eps) == replicas {
 			aepInfo, _ := getActiveEndpointsInfo(eps)
-			klog.V(4).InfoS(Format("elect %d active endpoints %s for gateway %s/%s",
+			klog.V(4).Info(Format("elect %d active endpoints %s for gateway %s/%s",
 				len(eps), fmt.Sprintf("[%s]", strings.Join(aepInfo[ActiveEndpointsName], ",")), gw.GetNamespace(), gw.GetName()))
 			return eps
 		}
-		klog.V(1).Infof(Format("node %s is active endpoints, type is %s", aep.NodeName, aep.Type))
-		klog.V(1).Infof(Format("add node %v", aep.DeepCopy()))
+		klog.V(1).Info(Format("node %s is active endpoints, type is %s", aep.NodeName, aep.Type))
+		klog.V(1).Info(Format("add node %v", aep.DeepCopy()))
 		eps = append(eps, aep.DeepCopy())
 	}
 
@@ -302,8 +305,8 @@ func electEndpoints(gw *ravenv1beta1.Gateway, endpointType string, readyNodes ma
 					len(eps), fmt.Sprintf("[%s]", strings.Join(aepInfo[ActiveEndpointsName], ",")), gw.GetNamespace(), gw.GetName()))
 				return eps
 			}
-			klog.V(1).Infof(Format("node %s is active endpoints, type is %s", ep.NodeName, ep.Type))
-			klog.V(1).Infof(Format("add node %v", ep.DeepCopy()))
+			klog.V(1).Info(Format("node %s is active endpoints, type is %s", ep.NodeName, ep.Type))
+			klog.V(1).Info(Format("add node %v", ep.DeepCopy()))
 			eps = append(eps, ep.DeepCopy())
 		}
 	}
@@ -325,7 +328,7 @@ func (r *ReconcileGateway) getPodCIDRs(ctx context.Context, node corev1.Node) ([
 			var blockAffinityList calicov3.BlockAffinityList
 			err := r.List(ctx, &blockAffinityList)
 			if err != nil {
-				err = fmt.Errorf(Format("unable to list calico blockaffinity: %s", err))
+				err = fmt.Errorf("unable to list calico blockaffinity: %s", err)
 				return nil, err
 			}
 			for _, v := range blockAffinityList.Items {
@@ -357,7 +360,10 @@ func getActiveEndpointsInfo(eps []*ravenv1beta1.Endpoint) (map[string][]string, 
 }
 
 func (r *ReconcileGateway) configEndpoints(ctx context.Context, gw *ravenv1beta1.Gateway) {
-	enableProxy, enableTunnel := util.CheckServer(ctx, r.Client)
+	globalEnableProxy, globalEnableTunnel := util.CheckServer(ctx, r.Client)
+	enableProxy := util.GetBoolAnnotation(gw.Annotations, raven.AnnotationEnableProxy, globalEnableProxy)
+	enableTunnel := util.GetBoolAnnotation(gw.Annotations, raven.AnnotationEnableTunnel, globalEnableTunnel)
+
 	for idx, val := range gw.Status.ActiveEndpoints {
 		if gw.Status.ActiveEndpoints[idx].Config == nil {
 			gw.Status.ActiveEndpoints[idx].Config = make(map[string]string)
@@ -370,7 +376,6 @@ func (r *ReconcileGateway) configEndpoints(ctx context.Context, gw *ravenv1beta1
 		default:
 		}
 	}
-	return
 }
 
 func (r *ReconcileGateway) addExtraAllowedSubnet(gw *ravenv1beta1.Gateway) {

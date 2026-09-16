@@ -24,10 +24,7 @@ const (
 	ServiceTopologyEndpointsController     = "service-topology-endpoints-controller"
 	ServiceTopologyEndpointSliceController = "service-topology-endpointslice-controller"
 	YurtAppSetController                   = "yurt-app-set-controller"
-	YurtAppDaemonController                = "yurt-app-daemon-controller"
-	YurtAppOverriderController             = "yurt-app-overrider-controller"
 	YurtStaticSetController                = "yurt-static-set-controller"
-	YurtCoordinatorCertController          = "yurt-coordinator-cert-controller"
 	DelegateLeaseController                = "delegate-lease-controller"
 	PodBindingController                   = "pod-binding-controller"
 	GatewayPickupController                = "gateway-pickup-controller"
@@ -36,7 +33,12 @@ const (
 	GatewayDNSController                   = "gateway-dns-controller"
 	NodeLifeCycleController                = "node-life-cycle-controller"
 	NodeBucketController                   = "node-bucket-controller"
+	YurtNodeConversionController           = "yurt-node-conversion-controller"
 	LoadBalancerSetController              = "load-balancer-set-controller"
+	HubLeaderController                    = "hubleader-controller"
+	HubLeaderConfigController              = "hubleaderconfig-controller"
+	HubLeaderRBACController                = "hubleaderrbac-controller"
+	ImagePreheatController                 = "image-preheat-controller"
 )
 
 func YurtManagerControllerAliases() map[string]string {
@@ -49,10 +51,7 @@ func YurtManagerControllerAliases() map[string]string {
 		"servicetopologyendpoints":      ServiceTopologyEndpointsController,
 		"servicetopologyendpointslices": ServiceTopologyEndpointSliceController,
 		"yurtappset":                    YurtAppSetController,
-		"yurtappdaemon":                 YurtAppDaemonController,
 		"yurtstaticset":                 YurtStaticSetController,
-		"yurtappoverrider":              YurtAppOverriderController,
-		"yurtcoordinatorcert":           YurtCoordinatorCertController,
 		"delegatelease":                 DelegateLeaseController,
 		"podbinding":                    PodBindingController,
 		"gatewaypickup":                 GatewayPickupController,
@@ -61,6 +60,11 @@ func YurtManagerControllerAliases() map[string]string {
 		"gatewaydns":                    GatewayDNSController,
 		"nodelifecycle":                 NodeLifeCycleController,
 		"nodebucket":                    NodeBucketController,
+		"yurtnodeconversion":            YurtNodeConversionController,
 		"loadbalancerset":               LoadBalancerSetController,
+		"hubleader":                     HubLeaderController,
+		"hubleaderconfig":               HubLeaderConfigController,
+		"hubleaderrbac":                 HubLeaderRBACController,
+		"imagepreheat":                  ImagePreheatController,
 	}
 }
